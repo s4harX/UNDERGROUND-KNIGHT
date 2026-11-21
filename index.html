@@ -62,12 +62,18 @@
     line-height: 1.5;
   }
   @media (pointer: coarse) {
-    html, body { padding: 0; overflow: hidden; background: #090910; }
-    #wrap { width: 100vw; height: 100vh; display: flex; align-items: center; justify-content: center; }
+    html, body { padding: 0; overflow: hidden; background: #090910; width: 100%; height: 100%; }
+    #wrap {
+      position: fixed;
+      left: 0; top: 0;
+      width: var(--app-w, 100vw);
+      height: var(--app-h, 100dvh);
+      display: flex; align-items: center; justify-content: center;
+    }
     canvas {
-      width: min(100vw, calc(100vh * 1.6));
+      width: min(var(--app-w, 100vw), calc(var(--app-h, 100dvh) * 1.6));
       height: auto;
-      max-height: 100vh;
+      max-height: var(--app-h, 100dvh);
       border-radius: 0;
       box-shadow: none;
     }
@@ -177,6 +183,18 @@ const UPGRADES = [
 ];
 
 const VERSION = "1.12";
+
+/* PWA install UX: Chrome/Edge fire beforeinstallprompt; iOS Safari never does. */
+let deferredInstallPrompt = null;
+let installHintUntil = 0;
+window.addEventListener("beforeinstallprompt", e => {
+  e.preventDefault();
+  deferredInstallPrompt = e;
+});
+window.addEventListener("appinstalled", () => {
+  deferredInstallPrompt = null;
+  installHintUntil = 0;
+});
 
 const FLOORS = [
   {
@@ -450,6 +468,25 @@ if (isTouch) {
   const hintEl = document.getElementById("hint");
   if (hintEl) hintEl.style.display = "none";
 }
+
+/* Keep the canvas inside the *visible* viewport when the browser toolbar slides. */
+(function fitViewport() {
+  const root = document.documentElement;
+  const update = () => {
+    const vv = window.visualViewport;
+    const h = vv ? vv.height : window.innerHeight;
+    const w = vv ? vv.width : window.innerWidth;
+    root.style.setProperty("--app-h", h + "px");
+    root.style.setProperty("--app-w", w + "px");
+  };
+  update();
+  if (window.visualViewport) {
+    window.visualViewport.addEventListener("resize", update);
+    window.visualViewport.addEventListener("scroll", update);
+  }
+  window.addEventListener("resize", update);
+  window.addEventListener("orientationchange", update);
+})();
 const seedParam = new URLSearchParams(location.search).get("seed");
 const sharedSeed = seedParam !== null && seedParam !== "" ? parseInt(seedParam, 10) : null;
 
@@ -5016,6 +5053,28 @@ function characterCards() {
   }));
 }
 
+function installButton() {
+  return { x: 24, y: 100, w: 150, h: 32 };
+}
+
+function installAction() {
+  ensureAudio();
+  sfx("buy");
+  buzz(20);
+  if (deferredInstallPrompt) {
+    const prompt = deferredInstallPrompt;
+    deferredInstallPrompt = null;
+    prompt.prompt();
+    if (prompt.userChoice) prompt.userChoice.catch(() => {});
+    return;
+  }
+  installHintUntil = performance.now() + 7000;
+}
+
+function isInstalled() {
+  return (window.matchMedia && matchMedia("(display-mode: standalone)").matches) || navigator.standalone === true;
+}
+
 function metaButton() {
   return { x: 752, y: 100, w: 172, h: 32 };
 }
@@ -5025,6 +5084,11 @@ function heroesButton() {
 }
 
 function handleMenuClick() {
+  const ib = installButton();
+  if (mouse.x >= ib.x && mouse.x <= ib.x + ib.w && mouse.y >= ib.y && mouse.y <= ib.y + ib.h) {
+    installAction();
+    return;
+  }
   const tb = trialsButton();
   if (mouse.x >= tb.x && mouse.x <= tb.x + tb.w && mouse.y >= tb.y && mouse.y <= tb.y + tb.h) {
     state = "trials";
@@ -5293,6 +5357,18 @@ function drawMenu() {
     ctx.fillText(label, b.x + b.w / 2, b.y + b.h / 2);
   }
 
+  const ib = installButton();
+  const installed = isInstalled();
+  const installLabel = installed ? "УСТАНОВЛЕНО" : deferredInstallPrompt ? "УСТАНОВИТЬ" : "УСТАНОВИТЬ ИГРУ";
+  const installColor = installed ? "rgba(233,230,245,.35)"
+    : deferredInstallPrompt ? "#7cff9b" : "rgba(142,230,255,.75)";
+  ctx.fillStyle = "rgba(8,8,16,.6)";
+  roundRect(ib.x, ib.y, ib.w, ib.h, 8); ctx.fill();
+  ctx.strokeStyle = installColor; ctx.lineWidth = 1.5; ctx.stroke();
+  ctx.fillStyle = installColor;
+  ctx.font = "bold 11px 'Segoe UI', sans-serif";
+  ctx.fillText(installLabel, ib.x + ib.w / 2, ib.y + ib.h / 2);
+
   const lines = isTouch ? [
     "Джойстик слева · прицел и огонь справа",
     "Кнопки: рывок, навык Q, перезарядка, оружие, E"
@@ -5303,6 +5379,21 @@ function drawMenu() {
   ctx.fillStyle = "rgba(233,230,245,.62)";
   ctx.font = "13px 'Segoe UI', sans-serif";
   lines.forEach((t, i) => ctx.fillText(t, W / 2, 214 + i * 22));
+
+  if (performance.now() < installHintUntil) {
+    ctx.fillStyle = "rgba(8,8,16,.95)";
+    roundRect(W / 2 - 350, 190, 700, 64, 12); ctx.fill();
+    ctx.strokeStyle = "#8ee6ff"; ctx.lineWidth = 1.5; ctx.stroke();
+    ctx.fillStyle = "#e9e6f5";
+    ctx.font = "13px 'Segoe UI', sans-serif";
+    ctx.fillText(isTouch
+      ? "iPhone/iPad: «Поделиться» → «На главный экран». Android: меню браузера → «Установить приложение»."
+      : "Открой сайт на телефоне по HTTPS: меню браузера → «Установить приложение».",
+      W / 2, 212);
+    ctx.fillStyle = "rgba(233,230,245,.55)";
+    ctx.font = "11px 'Segoe UI', sans-serif";
+    ctx.fillText("Если пункта «Установить» нет — обнови страницу и проверь, что сайт открывается по HTTPS", W / 2, 236);
+  }
 
   ctx.fillStyle = "rgba(142,230,255,.7)";
   ctx.font = "bold 12px 'Segoe UI', sans-serif";
