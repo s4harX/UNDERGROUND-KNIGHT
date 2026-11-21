@@ -29,10 +29,12 @@
     user-select: none;
     -webkit-touch-callout: none;
   }
-  #wrap { width: min(960px, 100%); }
+  #wrap { width: min(1600px, 100%); }
   canvas {
     display: block;
     width: 100%;
+    max-width: calc((100vh - 64px) * 1.6);
+    max-width: calc((100dvh - 64px) * 1.6);
     height: auto;
     border-radius: 14px;
     background: #0d0d16;
@@ -73,6 +75,7 @@
     canvas {
       width: min(var(--app-w, 100vw), calc(var(--app-h, 100dvh) * 1.6));
       height: auto;
+      max-width: none;
       max-height: var(--app-h, 100dvh);
       border-radius: 0;
       box-shadow: none;
@@ -182,19 +185,22 @@ const UPGRADES = [
   { id: "gem",    name: "САМОЦВЕТНЫЙ МАГНИТ", desc: "+7% / +14% самоцветов",     costs: [40, 90], bonus: [7, 14], color: "#b8a1ff" }
 ];
 
-const VERSION = "1.12";
+const VERSION = "1.13";
 
 /* PWA install UX: Chrome/Edge fire beforeinstallprompt; iOS Safari never does. */
 let deferredInstallPrompt = null;
-let installHintUntil = 0;
+let pageFirstTouch = 0;
+const pageOpenedAt = performance.now();
 window.addEventListener("beforeinstallprompt", e => {
   e.preventDefault();
   deferredInstallPrompt = e;
 });
 window.addEventListener("appinstalled", () => {
   deferredInstallPrompt = null;
-  installHintUntil = 0;
+  if (state === "install") state = "menu";
 });
+window.addEventListener("pointerdown", () => { pageFirstTouch = performance.now(); }, { once: true });
+window.addEventListener("touchstart", () => { pageFirstTouch = performance.now(); }, { once: true });
 
 const FLOORS = [
   {
@@ -469,6 +475,11 @@ if (isTouch) {
   if (hintEl) hintEl.style.display = "none";
 }
 
+/* Readable type on a phone: the canvas is scaled down, so internal fonts grow. */
+function uiFont(size, bold) {
+  return (bold ? "bold " : "") + Math.round(size * (isTouch ? 1.3 : 1)) + "px 'Segoe UI', sans-serif";
+}
+
 /* Keep the canvas inside the *visible* viewport when the browser toolbar slides. */
 (function fitViewport() {
   const root = document.documentElement;
@@ -501,19 +512,19 @@ const touch = {
   moveId: null,
   moveOrigin: { x: 0, y: 0 },
   moveVec: { x: 0, y: 0 },
-  aimId: null,
-  aimPoint: { x: W * .72, y: H * .5 },
+  attackId: null,
+  interactMode: false,
   lastTap: 0
 };
 
 const TOUCH_BTNS = [
-  { id: "dash",   x: 862, y: 518, r: 40, label: "↠",  color: "#9ad8ff" },
-  { id: "reload", x: 862, y: 436, r: 28, label: "⟳",  color: "#ffe27a" },
-  { id: "weapon", x: 766, y: 526, r: 28, label: "⇄",  color: "#ff9de2" },
-  { id: "interact", x: 766, y: 444, r: 28, label: "E", color: "#7cff9b" },
-  { id: "skill",  x: 862, y: 356, r: 32, label: "Q", color: "#ffb36b" },
-  { id: "melee",  x: 766, y: 356, r: 32, label: "⚔", color: "#b8a1ff" },
-  { id: "pause",  x: 910, y: 60, r: 18, label: "II", color: "#cfd6ff" }
+  { id: "dash",   x: 862, y: 518, r: 46, label: "↠",  color: "#9ad8ff" },
+  { id: "reload", x: 862, y: 436, r: 32, label: "⟳",  color: "#ffe27a" },
+  { id: "weapon", x: 766, y: 526, r: 34, label: "⇄",  color: "#ff9de2" },
+  { id: "attack", x: 766, y: 444, r: 46, label: "⊕",  color: "#7cff9b" },
+  { id: "skill",  x: 862, y: 356, r: 38, label: "Q", color: "#ffb36b" },
+  { id: "melee",  x: 766, y: 356, r: 38, label: "⚔", color: "#b8a1ff" },
+  { id: "pause",  x: 910, y: 60, r: 22, label: "II", color: "#cfd6ff" }
 ];
 
 const SAVE_KEY = "underground-knight-save-v1";
@@ -706,7 +717,7 @@ function angleDelta(a, b) {
 }
 
 function autoAimPoint(rawX, rawY) {
-  if (!game || settings.autoAim === false || state !== "playing") return { x: rawX, y: rawY, target: null };
+  if (!game || (settings.autoAim === false && !isTouch) || state !== "playing") return { x: rawX, y: rawY, target: null };
   const p = game.player;
   const rawDist = Math.hypot(rawX - p.x, rawY - p.y);
   const rawAngle = Math.atan2(rawY - p.y, rawX - p.x);
@@ -730,12 +741,14 @@ function readInput() {
   const mv = getMoveVector();
   input.moveX = mv.x;
   input.moveY = mv.y;
-  const rawX = touch.aimId !== null ? touch.aimPoint.x : mouse.x;
-  const rawY = touch.aimId !== null ? touch.aimPoint.y : mouse.y;
+  // On touch there is no manual aiming: the game picks the nearest target itself.
+  const p = game && game.player;
+  const rawX = isTouch && p ? p.x : mouse.x;
+  const rawY = isTouch && p ? p.y : mouse.y;
   const aimed = autoAimPoint(rawX, rawY);
   input.aimX = aimed.x;
   input.aimY = aimed.y;
-  input.fire = mouse.down || touch.aimId !== null;
+  input.fire = mouse.down || (touch.attackId !== null && !touch.interactMode);
 }
 
 function ensureAudio() {
@@ -1641,9 +1654,11 @@ function startGame(seedOverride) {
   state = "playing";
   shake = 0;
   touch.moveId = null;
-  touch.aimId = null;
+  touch.attackId = null;
+  touch.interactMode = false;
   touch.moveVec.x = touch.moveVec.y = 0;
   mouse.down = false;
+  enterFullscreenOnStart();
   readInput();
   floater("Сид " + runSeed, W / 2, R.y + 60, "#ffe27a");
 }
@@ -3428,6 +3443,7 @@ function draw() {
   drawBackdrop();
 
   if (state === "menu") { drawMenu(); ctx.restore(); return; }
+  if (state === "install") { drawInstallGuide(); ctx.restore(); return; }
   if (state === "setup") { drawSetup(); ctx.restore(); return; }
   if (state === "achievements") { drawAchievements(); ctx.restore(); return; }
   if (state === "heroes") { drawHeroes(); ctx.restore(); return; }
@@ -3453,7 +3469,7 @@ function draw() {
   ctx.restore();
 
   drawHUD();
-  if (isTouch || touch.moveId !== null || touch.aimId !== null) drawTouchControls();
+  if (isTouch || touch.moveId !== null || touch.attackId !== null) drawTouchControls();
   if (state === "shop") drawShop();
   if (state === "reward") drawReward();
   if (state === "settings") drawSettings();
@@ -3658,7 +3674,7 @@ function drawProps() {
     if (o.kind === "merchant") {
       drawMerchant(o.x, o.y, 1);
       ctx.fillStyle = "rgba(255,215,107,.65)";
-      ctx.font = "bold 10px 'Segoe UI', sans-serif";
+      ctx.font = uiFont(10, true);
       ctx.textAlign = "center";
       ctx.fillText("ТОРГОВЕЦ", o.x, o.y + 44);
     } else if (o.kind === "mine") {
@@ -3736,7 +3752,7 @@ function drawProps() {
       ctx.fillStyle = "#4d2412";
       ctx.beginPath(); ctx.arc(0, -3, 5, 0, 7); ctx.fill();
       ctx.fillStyle = toxicBarrel ? "#b6ffb0" : frostBarrel ? "#e0f8ff" : "#ffe27a";
-      ctx.font = "bold 10px 'Segoe UI', sans-serif";
+      ctx.font = uiFont(10, true);
       ctx.textAlign = "center"; ctx.textBaseline = "middle";
       ctx.fillText(toxicBarrel ? "☣" : frostBarrel ? "❄" : "!", 0, -3);
       if (o.flash > 0) {
@@ -3784,11 +3800,11 @@ function drawProps() {
       ctx.fillStyle = o.opened ? "#7cffcf" : "#e9e6f5";
       ctx.beginPath(); ctx.arc(0, -6, 9, 0, 7); ctx.fill();
       ctx.fillStyle = "#123b34";
-      ctx.font = "bold 13px 'Segoe UI', sans-serif";
+      ctx.font = uiFont(13, true);
       ctx.textAlign = "center"; ctx.textBaseline = "middle";
       ctx.fillText(o.opened ? "✓" : "?", 0, -6);
       ctx.fillStyle = hexA(o.opened ? "#7cffcf" : "#e9e6f5", .8);
-      ctx.font = "bold 10px 'Segoe UI', sans-serif";
+      ctx.font = uiFont(10, true);
       ctx.fillText(o.opened ? "НАЁМНИК В КОМАНДЕ" : (isTouch ? "E" : "E · ОСВОБОДИТЬ"), 0, 44);
       ctx.restore();
     } else if (o.kind === "pillar") {
@@ -3835,7 +3851,7 @@ function drawProps() {
         ctx.fillStyle = "rgba(255,157,226,.12)";
         ctx.beginPath(); ctx.arc(0, 0, 26 + Math.sin(game.time * 4) * 3, 0, 7); ctx.fill();
         ctx.fillStyle = "#ff9de2";
-        ctx.font = "bold 10px 'Segoe UI', sans-serif";
+        ctx.font = uiFont(10, true);
         ctx.textAlign = "center";
         ctx.fillText(isTouch ? "E" : "E · СЕКРЕТ", 0, -30);
       }
@@ -3870,7 +3886,7 @@ function drawProps() {
       }
       ctx.globalAlpha = 1;
       ctx.fillStyle = "#fff0c4";
-      ctx.font = "bold 11px 'Segoe UI', sans-serif";
+      ctx.font = uiFont(11, true);
       ctx.textAlign = "center";
       ctx.fillText(isTouch ? "E" : "E · ВНИЗ", 0, -34);
       ctx.restore();
@@ -3894,7 +3910,7 @@ function drawPickups() {
       ctx.fillStyle = "#ffd76b";
       ctx.beginPath(); ctx.ellipse(0, 0, 9, 11, 0, 0, 7); ctx.fill();
       ctx.strokeStyle = "#b98a2e"; ctx.lineWidth = 2; ctx.stroke();
-      ctx.fillStyle = "#b98a2e"; ctx.font = "bold 11px sans-serif"; ctx.textAlign = "center"; ctx.textBaseline = "middle";
+      ctx.fillStyle = "#b98a2e"; ctx.font = uiFont(11, true); ctx.textAlign = "center"; ctx.textBaseline = "middle";
       ctx.fillText("¢", 0, 1);
     } else if (it.kind === "ammo") {
       ctx.fillStyle = "#8ee6ff";
@@ -4260,7 +4276,7 @@ function drawEffects() {
 function drawFloaters() {
   ctx.textAlign = "center";
   ctx.textBaseline = "middle";
-  ctx.font = "bold 15px 'Segoe UI', sans-serif";
+  ctx.font = uiFont(15, true);
   for (const f of game.floaters) {
     ctx.globalAlpha = clamp(f.life, 0, 1);
     ctx.fillStyle = "rgba(0,0,0,.7)";
@@ -4283,15 +4299,15 @@ function drawHUD() {
   ctx.fillStyle = p.hp / p.maxHp > .3 ? "#7cff9b" : "#ff6b81";
   roundRect(32, 25, 190 * clamp(p.hp / p.maxHp, 0, 1), 14, 7); ctx.fill();
   ctx.fillStyle = "#e9e6f5";
-  ctx.font = "bold 12px 'Segoe UI', sans-serif";
+  ctx.font = uiFont(12, true);
   ctx.textAlign = "left"; ctx.textBaseline = "middle";
   ctx.fillText(Math.ceil(p.hp) + " / " + p.maxHp, 40, 32);
 
   ctx.fillStyle = "#ffd76b";
   ctx.beginPath(); ctx.arc(248, 32, 9, 0, 7); ctx.fill();
-  ctx.fillStyle = "#2b2110"; ctx.font = "bold 12px sans-serif"; ctx.textAlign = "center";
+  ctx.fillStyle = "#2b2110"; ctx.font = uiFont(12, true); ctx.textAlign = "center";
   ctx.fillText("¢", 248, 33);
-  ctx.fillStyle = "#fff0b8"; ctx.textAlign = "left"; ctx.font = "bold 16px 'Segoe UI', sans-serif";
+  ctx.fillStyle = "#fff0b8"; ctx.textAlign = "left"; ctx.font = uiFont(16, true);
   ctx.fillText(String(game.coins), 264, 32);
 
   const dashPct = 1 - clamp(p.dashCd / p.dashCdMax, 0, 1);
@@ -4301,7 +4317,7 @@ function drawHUD() {
   roundRect(32, 46, 190 * dashPct, 8, 4); ctx.fill();
   if (!compact) {
     ctx.fillStyle = "rgba(255,255,255,.45)";
-    ctx.font = "10px 'Segoe UI', sans-serif";
+    ctx.font = uiFont(10);
     ctx.fillText("РЫВОК", 230, 50);
   }
 
@@ -4312,7 +4328,7 @@ function drawHUD() {
     roundRect(32, 41, 190 * clamp(p.shield / p.shieldMax, 0, 1), 4, 2); ctx.fill();
     if (!compact) {
       ctx.fillStyle = "rgba(255,226,122,.8)";
-      ctx.font = "9px 'Segoe UI', sans-serif";
+      ctx.font = uiFont(9);
       ctx.fillText("ЩИТ " + Math.ceil(p.shield), 230, 43);
     }
   }
@@ -4321,16 +4337,16 @@ function drawHUD() {
   ctx.fillStyle = p.energy < 8 ? "#ff6b81" : "#8ee6ff";
   roundRect(32, 55, 190 * clamp(p.energy / p.energyMax, 0, 1), 7, 4); ctx.fill();
   ctx.fillStyle = "rgba(142,230,255,.8)";
-  ctx.font = "9px 'Segoe UI', sans-serif";
+  ctx.font = uiFont(9);
   ctx.fillText(compact ? String(Math.ceil(p.energy)) : "ЭНЕРГИЯ " + Math.ceil(p.energy), 230, 59);
   if (p.meleeMode) {
     ctx.fillStyle = "#b8a1ff";
-    ctx.font = "bold 10px 'Segoe UI', sans-serif";
+    ctx.font = uiFont(10, true);
     ctx.fillText("⚔ КЛИНОК", 32, 68);
   }
   if (p.phoenix > 0) {
     ctx.fillStyle = "#ff9d4d";
-    ctx.font = "bold 10px 'Segoe UI', sans-serif";
+    ctx.font = uiFont(10, true);
     ctx.fillText("ФЕНИКС ×" + p.phoenix, 120, 68);
   }
 
@@ -4358,7 +4374,7 @@ function drawHUD() {
       roundRect(x + 7, cardY + 15, 20, 6, 3); ctx.fill();
     }
     ctx.fillStyle = "#e9e6f5";
-    ctx.font = "bold " + (touchHud ? 10 : 11) + "px 'Segoe UI', sans-serif";
+    ctx.font = uiFont(touchHud ? 10 : 11, true);
     ctx.textAlign = "left";
     ctx.fillText((i + 1) + ". " + w.name, x + 7, cardY + 14);
     ctx.fillStyle = w.reloadT > 0 ? "#ffb36b" : "rgba(233,230,245,.6)";
@@ -4372,7 +4388,7 @@ function drawHUD() {
   roundRect(W - 188, 14, 170, 128, 10); ctx.fill();
   ctx.strokeStyle = "rgba(255,255,255,.08)"; ctx.stroke();
   ctx.fillStyle = "rgba(233,230,245,.55)";
-  ctx.font = "10px 'Segoe UI', sans-serif";
+  ctx.font = uiFont(10);
   ctx.fillText("ЭТАЖ " + game.floor + "/" + FLOORS.length + " · УРОВЕНЬ " + game.level, W - 176, 28);
   drawMinimap(W - 174, 38);
 
@@ -4382,26 +4398,26 @@ function drawHUD() {
   ctx.beginPath(); ctx.arc(W - 166, 119, 11, 0, 7); ctx.fill();
   ctx.strokeStyle = ready ? "#ffffff" : "rgba(255,255,255,.2)"; ctx.lineWidth = 1.5; ctx.stroke();
   ctx.fillStyle = ready ? "#1a1420" : "rgba(255,255,255,.45)";
-  ctx.font = "bold 11px sans-serif"; ctx.textAlign = "center";
+  ctx.font = uiFont(11, true); ctx.textAlign = "center";
   ctx.fillText("Q", W - 166, 120);
   ctx.textAlign = "left";
   ctx.fillStyle = ready ? "rgba(233,230,245,.8)" : "rgba(233,230,245,.38)";
-  ctx.font = "bold 10px 'Segoe UI', sans-serif";
+  ctx.font = uiFont(10, true);
   ctx.fillText(sk.name, W - 149, 115);
   if (!compact) {
     ctx.fillStyle = "rgba(233,230,245,.4)";
-    ctx.font = "9px 'Segoe UI', sans-serif";
+    ctx.font = uiFont(9);
     ctx.fillText(ready ? "ГОТОВО" : p.skillCd.toFixed(1) + " с", W - 149, 128);
   }
 
   if (!compact) {
     ctx.fillStyle = "rgba(233,230,245,.5)";
-    ctx.font = "11px 'Segoe UI', sans-serif";
+    ctx.font = uiFont(11);
     ctx.textAlign = "right";
     ctx.fillText("Врагов: " + currentRoom().props.filter(o => o.type && !o.dead).length + "   Убийств: " + game.killCount, W - 24, 162);
 
     ctx.fillStyle = "rgba(233,230,245,.4)";
-    ctx.font = "10px 'Segoe UI', sans-serif";
+    ctx.font = uiFont(10);
     ctx.fillText("СИД " + game.seed, W - 24, 178);
   }
 
@@ -4414,7 +4430,7 @@ function drawHUD() {
     ctx.fillStyle = boss.enraged ? "#ffd76b" : theme.accent;
     roundRect(bx + 2, by + 2, (bw - 4) * clamp(boss.hp / boss.maxHp, 0, 1), 11, 5); ctx.fill();
     ctx.fillStyle = "#fff0f3";
-    ctx.font = "bold 10px 'Segoe UI', sans-serif";
+    ctx.font = uiFont(10, true);
     ctx.textAlign = "center";
     ctx.fillText(theme.bossName.toUpperCase() + (boss.enraged ? " · ЯРОСТЬ" : ""), W / 2, by + 8);
   }
@@ -4438,7 +4454,7 @@ function drawHUD() {
     ctx.textAlign = "left";
     if (!compact) {
       ctx.fillStyle = "rgba(233,230,245,.5)";
-      ctx.font = "9px 'Segoe UI', sans-serif";
+      ctx.font = uiFont(9);
       ctx.fillText("СИНЕРГИИ", 30, 106);
     }
     game.synergyIds.forEach((id, i) => {
@@ -4457,7 +4473,7 @@ function drawHUD() {
     ctx.textAlign = "left";
     if (!compact) {
       ctx.fillStyle = "rgba(192,140,255,.7)";
-      ctx.font = "9px 'Segoe UI', sans-serif";
+      ctx.font = uiFont(9);
       ctx.fillText("СТАТУИ", 30, 136);
     }
     game.statues.forEach((id, i) => {
@@ -4468,14 +4484,14 @@ function drawHUD() {
       ctx.fillStyle = "rgba(8,8,16,.85)";
       ctx.beginPath(); ctx.arc(sx, sy, sr, 0, 7); ctx.fill();
       ctx.fillStyle = s.color;
-      ctx.font = "bold " + (compact ? 11 : 12) + "px 'Segoe UI', sans-serif";
+      ctx.font = uiFont(compact ? 11 : 12, true);
       ctx.fillText(s.icon, sx - sr * .45, sy + 4);
     });
   }
   if (game.mergedIds && game.mergedIds.length) {
     ctx.textAlign = "left";
     ctx.fillStyle = "#ffd76b";
-    ctx.font = "bold 9px 'Segoe UI', sans-serif";
+    ctx.font = uiFont(9, true);
     ctx.fillText((compact ? "✦×" : "СЛИЯНИЯ ×") + game.mergedIds.length, 30, compact ? 146 : 170);
   }
 
@@ -4487,26 +4503,26 @@ function drawHUD() {
   if (!compact) {
     ctx.textAlign = "right";
     ctx.fillStyle = "rgba(255,215,107,.7)";
-    ctx.font = "bold 10px 'Segoe UI', sans-serif";
+    ctx.font = uiFont(10, true);
     ctx.fillText(mode.name + (modNames ? " · " + modNames : ""), W - 24, 194);
   }
 
   if (game.mode === "sprint") {
     ctx.textAlign = "center";
     ctx.fillStyle = "#8ee6ff";
-    ctx.font = "bold 14px 'Segoe UI', sans-serif";
+    ctx.font = uiFont(14, true);
     const secs = Math.floor(game.time);
     ctx.fillText("ВРЕМЯ " + Math.floor(secs / 60) + ":" + String(secs % 60).padStart(2, "0"),
                  W / 2, 34);
     if (saveData.records.sprintBest) {
       ctx.fillStyle = "rgba(142,230,245,.55)";
-      ctx.font = "9px 'Segoe UI', sans-serif";
+      ctx.font = uiFont(9);
       ctx.fillText("РЕКОРД " + Math.floor(saveData.records.sprintBest / 60) + ":" +
                    String(saveData.records.sprintBest % 60).padStart(2, "0"), W / 2, 48);
     }
   }
 
-  if (settings.autoAim !== false && game.aimTarget && !game.aimTarget.dead && !(compact && isTouch)) {
+  if ((settings.autoAim !== false || isTouch) && game.aimTarget && !game.aimTarget.dead) {
     const t = game.aimTarget, s = t.r + 10;
     ctx.strokeStyle = "rgba(124,255,155,.55)";
     ctx.lineWidth = 2;
@@ -4525,7 +4541,7 @@ function drawTouchControls() {
   ctx.save();
 
   // Virtual joystick
-  const jx = 120, jy = 500, jr = 54;
+  const jx = 120, jy = 500, jr = 64;
   const active = touch.moveId !== null;
   const ox = active ? touch.moveOrigin.x : jx;
   const oy = active ? touch.moveOrigin.y : jy;
@@ -4538,7 +4554,7 @@ function drawTouchControls() {
   const kx = ox + touch.moveVec.x * (jr - 12);
   const ky = oy + touch.moveVec.y * (jr - 12);
   ctx.fillStyle = active ? "rgba(142,230,255,.55)" : "rgba(142,230,255,.22)";
-  ctx.beginPath(); ctx.arc(kx, ky, 20, 0, 7); ctx.fill();
+  ctx.beginPath(); ctx.arc(kx, ky, 24, 0, 7); ctx.fill();
   ctx.strokeStyle = "rgba(255,255,255,.4)"; ctx.lineWidth = 2; ctx.stroke();
 
   // Action buttons
@@ -4551,9 +4567,9 @@ function drawTouchControls() {
     ctx.strokeStyle = ready ? b.color : "rgba(255,255,255,.12)";
     ctx.lineWidth = 2; ctx.stroke();
     ctx.fillStyle = ready ? b.color : "rgba(255,255,255,.25)";
-    ctx.font = "bold " + (b.id === "dash" ? 24 : 19) + "px 'Segoe UI', sans-serif";
+    ctx.font = "bold " + (b.id === "dash" ? 30 : 24) + "px 'Segoe UI', sans-serif";
     ctx.textAlign = "center"; ctx.textBaseline = "middle";
-    ctx.fillText(b.label, b.x, b.y + 1);
+    ctx.fillText(b.id === "attack" && nearbyInteractable() ? "E" : b.label, b.x, b.y + 1);
 
     if ((b.id === "dash" || b.id === "skill" || b.id === "melee") && !ready) {
       const cdKey = b.id === "skill" ? "skillCd" : b.id === "melee" ? "meleeCd" : "dashCd";
@@ -4566,42 +4582,26 @@ function drawTouchControls() {
       ctx.arc(b.x, b.y, b.r + 5, -Math.PI / 2, -Math.PI / 2 + Math.PI * 2 * pct);
       ctx.stroke();
     }
-    if (b.id === "weapon" && !compact) {
-      ctx.fillStyle = "#ff9de2";
-      ctx.font = "bold 10px 'Segoe UI', sans-serif";
-      ctx.fillText("ОРУЖИЕ", b.x, b.y + b.r + 12);
-    }
-    if (b.id === "melee" && !compact) {
-      ctx.fillStyle = game.player.meleeMode ? "#c08cff" : "rgba(255,255,255,.55)";
-      ctx.font = "bold 9px 'Segoe UI', sans-serif";
-      ctx.fillText(game.player.meleeMode ? "КЛИНОК ВКЛ" : "КЛИНОК", b.x, b.y + b.r + 12);
+    const labels = {
+      dash: ["РЫВОК", "#9ad8ff"],
+      reload: ["ПЕРЕЗАРЯД", "#ffe27a"],
+      weapon: ["СМЕНА", "#ff9de2"],
+      attack: [nearbyInteractable() ? "ВЗАИМОД." : game.player.meleeMode ? "УДАР" : "ОГОНЬ", "#7cff9b"],
+      skill: ["НАВЫК Q", "#ffb36b"],
+      melee: [game.player.meleeMode ? "КЛИНОК ВКЛ" : "КЛИНОК", "#c08cff"]
+    };
+    const lab = labels[b.id];
+    if (lab) {
+      ctx.fillStyle = ready ? lab[1] : "rgba(255,255,255,.35)";
+      ctx.font = uiFont(10, true);
+      ctx.fillText(lab[0], b.x, b.y + b.r + 14);
     }
   }
 
-  // Aim reticle while firing (snapped to an enemy when auto-aim locks on)
-  if (touch.aimId !== null) {
-    const ax = input.aimX, ay = input.aimY;
-    const locked = !!game.aimTarget && !game.aimTarget.dead;
-    ctx.strokeStyle = locked ? "rgba(124,255,155,.9)" : "rgba(255,255,255,.65)";
-    ctx.lineWidth = 2;
-    ctx.beginPath(); ctx.arc(ax, ay, 14, 0, 7); ctx.stroke();
-    ctx.beginPath();
-    ctx.moveTo(ax - 22, ay); ctx.lineTo(ax - 8, ay);
-    ctx.moveTo(ax + 8, ay); ctx.lineTo(ax + 22, ay);
-    ctx.moveTo(ax, ay - 22); ctx.lineTo(ax, ay - 8);
-    ctx.moveTo(ax, ay + 8); ctx.lineTo(ax, ay + 22);
-    ctx.stroke();
-    if (locked && !compact) {
-      ctx.fillStyle = "rgba(124,255,155,.8)";
-      ctx.font = "bold 9px 'Segoe UI', sans-serif";
-      ctx.fillText("ЦЕЛЬ", ax, ay - 30);
-    }
-    if (!compact) {
-      ctx.strokeStyle = "rgba(255,255,255,.18)";
-      ctx.lineWidth = 1;
-      ctx.beginPath(); ctx.arc(touch.aimPoint.x, touch.aimPoint.y, 9, 0, 7); ctx.stroke();
-    }
-  }
+  ctx.fillStyle = "rgba(142,230,255,.7)";
+  ctx.font = uiFont(10, true);
+  ctx.fillText("ДВИЖЕНИЕ", jx, jy + jr + 14);
+
   ctx.restore();
 }
 
@@ -4643,13 +4643,13 @@ function drawShop() {
   ctx.font = "bold 26px 'Segoe UI', sans-serif";
   ctx.fillText("МАГАЗИН", W / 2, 166);
   ctx.fillStyle = "#e9e6f5";
-  ctx.font = "14px 'Segoe UI', sans-serif";
+  ctx.font = uiFont(14);
   ctx.fillText("Монеты: " + game.coins + "     E — выйти", W / 2, 198);
 
   drawMerchant(256, 182, 1.1);
   ctx.textAlign = "center";
   ctx.fillStyle = "rgba(255,215,107,.6)";
-  ctx.font = "bold 9px 'Segoe UI', sans-serif";
+  ctx.font = uiFont(9, true);
   ctx.fillText("ТОРГОВЕЦ", 256, 216);
   ctx.textAlign = "left";
   ctx.fillStyle = "rgba(233,230,245,.55)";
@@ -4666,20 +4666,20 @@ function drawShop() {
     ctx.strokeStyle = item ? "rgba(255,255,255,.14)" : "rgba(255,255,255,.05)"; ctx.lineWidth = 1; ctx.stroke();
     if (!item) {
       ctx.fillStyle = "rgba(233,230,245,.35)";
-      ctx.font = "13px 'Segoe UI', sans-serif";
+      ctx.font = uiFont(13);
       ctx.fillText("ПРОДАНО", W / 2, b.y + 27);
       continue;
     }
     ctx.textAlign = "left";
     ctx.fillStyle = "#fff0b8";
-    ctx.font = "bold 15px 'Segoe UI', sans-serif";
+    ctx.font = uiFont(15, true);
     ctx.fillText(item.title, b.x + 16, b.y + 17);
     ctx.fillStyle = "rgba(233,230,245,.62)";
-    ctx.font = "12px 'Segoe UI', sans-serif";
+    ctx.font = uiFont(12);
     ctx.fillText(item.desc, b.x + 16, b.y + 38);
     ctx.textAlign = "right";
     ctx.fillStyle = game.coins >= item.price ? "#ffd76b" : "#ff6b81";
-    ctx.font = "bold 15px 'Segoe UI', sans-serif";
+    ctx.font = uiFont(15, true);
     ctx.fillText(item.price + " ¢", b.x + b.w - 16, b.y + 27);
   }
 
@@ -4687,7 +4687,7 @@ function drawShop() {
   ctx.fillStyle = "rgba(255,255,255,.07)";
   roundRect(close.x, close.y, close.w, close.h, 8); ctx.fill();
   ctx.fillStyle = "#e9e6f5";
-  ctx.textAlign = "center"; ctx.font = "bold 13px 'Segoe UI', sans-serif";
+  ctx.textAlign = "center"; ctx.font = uiFont(13, true);
   ctx.fillText("ВЫЙТИ", W / 2, close.y + 21);
 }
 
@@ -4730,7 +4730,7 @@ function drawReward() {
   ctx.font = "bold 30px 'Segoe UI', sans-serif";
   ctx.fillText(statuePick ? "ВЫБЕРИ СТАТУЮ" : "ВЫБЕРИ НАГРАДУ", W / 2, 116);
   ctx.fillStyle = "rgba(233,230,245,.65)";
-  ctx.font = "14px 'Segoe UI', sans-serif";
+  ctx.font = uiFont(14);
   ctx.fillText(statuePick
     ? "Статуи действуют весь забег и усиливают билд"
     : isTouch ? "Коснись карты или кнопки «ВЗЯТЬ»" : "Нажми 1, 2 или 3 — либо кликни по карте", W / 2, 150);
@@ -4747,7 +4747,7 @@ function drawReward() {
     ctx.fillStyle = hexA(rar.color, .16);
     roundRect(b.x + b.w / 2 - 52, b.y + 14, 104, 22, 7); ctx.fill();
     ctx.fillStyle = rar.color;
-    ctx.font = "bold 10px 'Segoe UI', sans-serif";
+    ctx.font = uiFont(10, true);
     ctx.fillText(rar.name, b.x + b.w / 2, b.y + 27);
 
     ctx.fillStyle = r.color;
@@ -4756,17 +4756,17 @@ function drawReward() {
     ctx.beginPath(); ctx.arc(b.x + b.w / 2 - 9, b.y + 65, 8, 0, 7); ctx.fill();
 
     ctx.fillStyle = "#e9e6f5";
-    ctx.font = "bold 16px 'Segoe UI', sans-serif";
+    ctx.font = uiFont(16, true);
     drawWrappedCentered(r.name, b.x + b.w / 2, b.y + 132, b.w - 24, 21);
     ctx.fillStyle = "rgba(233,230,245,.72)";
-    ctx.font = "13px 'Segoe UI', sans-serif";
+    ctx.font = uiFont(13);
     drawWrappedCentered(r.desc, b.x + b.w / 2, b.y + 176, b.w - 28, 19);
 
     ctx.fillStyle = hexA(rar.color, hovered ? .3 : .14);
     roundRect(b.x + 24, b.y + b.h - 46, b.w - 48, 32, 8); ctx.fill();
     ctx.strokeStyle = rar.color; ctx.lineWidth = 1.5; ctx.stroke();
     ctx.fillStyle = rar.color;
-    ctx.font = "bold 12px 'Segoe UI', sans-serif";
+    ctx.font = uiFont(12, true);
     ctx.fillText("ВЗЯТЬ · " + (b.i + 1), b.x + b.w / 2, b.y + b.h - 29);
   }
 }
@@ -4780,8 +4780,9 @@ function settingsButtons() {
     { id: "particles", x: 350, y: 390, w: 260, h: 34, label: "" },
     { id: "autoAim",   x: 350, y: 428, w: 260, h: 34, label: "" },
     { id: "compactHud",x: 350, y: 466, w: 260, h: 34, label: "" },
-    { id: "back",      x: 390, y: 518, w: 180, h: 38, label: "НАЗАД" }
-  ];
+    { id: "fullscreen",x: 350, y: 504, w: 260, h: 34, label: "" },
+    { id: "back",      x: 390, y: 550, w: 180, h: 38, label: "НАЗАД" }
+  ].filter(b => !(isTouch && b.id === "autoAim"));
 }
 
 function handleSettingsClick() {
@@ -4802,6 +4803,7 @@ function fireSettingsButton(id) {
   else if (id === "particles") { settings.particles = !settings.particles; saveSettings(); }
   else if (id === "autoAim") { settings.autoAim = !settings.autoAim; saveSettings(); }
   else if (id === "compactHud") { settings.compactHud = !settings.compactHud; saveSettings(); }
+  else if (id === "fullscreen") { toggleFullscreen(); return; }
   else if (id === "back") { state = "paused"; return; }
   sfx("buy");
   buzz(20);
@@ -4819,10 +4821,10 @@ function drawSettings() {
   ctx.fillText("НАСТРОЙКИ", W / 2, 194);
 
   ctx.fillStyle = "rgba(233,230,245,.8)";
-  ctx.font = "15px 'Segoe UI', sans-serif";
+  ctx.font = uiFont(15);
   ctx.fillText("Громкость", W / 2, 222);
   ctx.fillStyle = "#ffe27a";
-  ctx.font = "bold 18px 'Segoe UI', sans-serif";
+  ctx.font = uiFont(18, true);
   ctx.fillText(Math.round(settings.volume * 100) + "%", W / 2, 256);
 
   const rows = [
@@ -4830,8 +4832,9 @@ function drawSettings() {
     { id: "shake",     label: "Тряска экрана", on: settings.shake },
     { id: "particles", label: "Частицы",    on: settings.particles },
     { id: "autoAim",   label: "Автонахождение", on: settings.autoAim !== false },
-    { id: "compactHud",label: "Компактный HUD",  on: settings.compactHud === true }
-  ];
+    { id: "compactHud",label: "Компактный HUD",  on: settings.compactHud === true },
+    { id: "fullscreen",label: "На весь экран", on: isFullscreen() }
+  ].filter(r => !(isTouch && r.id === "autoAim"));
   for (const b of settingsButtons()) {
     const row = rows.find(r => r.id === b.id);
     ctx.fillStyle = "rgba(255,255,255,.07)";
@@ -4839,7 +4842,7 @@ function drawSettings() {
     ctx.strokeStyle = row ? (row.on ? "#7cff9b" : "rgba(255,255,255,.15)") : "#8ee6ff";
     ctx.lineWidth = 2; ctx.stroke();
     ctx.fillStyle = "#e9e6f5";
-    ctx.font = "bold 14px 'Segoe UI', sans-serif";
+    ctx.font = uiFont(14, true);
     if (row) {
       ctx.textAlign = "left";
       ctx.fillText(row.label, b.x + 16, b.y + b.h / 2);
@@ -4878,14 +4881,14 @@ function drawCenterPanel(title, subtitle, color) {
   ctx.font = "bold 34px 'Segoe UI', sans-serif";
   ctx.fillText(title, W / 2, 270);
   ctx.fillStyle = "rgba(233,230,245,.75)";
-  ctx.font = "15px 'Segoe UI', sans-serif";
+  ctx.font = uiFont(15);
   ctx.fillText(subtitle, W / 2, 316);
   const b = pauseSettingsButton();
   ctx.fillStyle = "rgba(142,230,255,.12)";
   roundRect(b.x, b.y, b.w, b.h, 9); ctx.fill();
   ctx.strokeStyle = "#8ee6ff"; ctx.lineWidth = 2; ctx.stroke();
   ctx.fillStyle = "#8ee6ff";
-  ctx.font = "bold 14px 'Segoe UI', sans-serif";
+  ctx.font = uiFont(14, true);
   ctx.fillText("НАСТРОЙКИ", W / 2, b.y + b.h / 2);
 }
 
@@ -4932,13 +4935,13 @@ function drawModeCards() {
     ctx.strokeStyle = active ? "#ffd76b" : "rgba(255,255,255,.12)";
     ctx.lineWidth = active ? 2 : 1; ctx.stroke();
     ctx.fillStyle = active ? "#ffd76b" : "#e9e6f5";
-    ctx.font = "bold 15px 'Segoe UI', sans-serif";
+    ctx.font = uiFont(15, true);
     ctx.fillText(b.m.name, b.x + b.w / 2, b.y + 26);
     ctx.fillStyle = "rgba(233,230,245,.55)";
-    ctx.font = "11px 'Segoe UI', sans-serif";
+    ctx.font = uiFont(11);
     ctx.fillText(b.m.desc, b.x + b.w / 2, b.y + 50);
     ctx.fillStyle = "#ff9de2";
-    ctx.font = "bold 12px 'Segoe UI', sans-serif";
+    ctx.font = uiFont(12, true);
     ctx.fillText("НАГРАДА ✦ ×" + b.m.gemMul, b.x + b.w / 2, b.y + 72);
     let rec = "";
     if (b.m.id === "sprint" && saveData.records.sprintBest) {
@@ -4948,7 +4951,7 @@ function drawModeCards() {
     if (b.m.id === "bossRush" && saveData.records.rushBest) rec = "Лучшее время " + saveData.records.rushBest + " с";
     if (rec) {
       ctx.fillStyle = "rgba(142,230,255,.55)";
-      ctx.font = "10px 'Segoe UI', sans-serif";
+      ctx.font = uiFont(10);
       ctx.fillText(rec, b.x + b.w / 2, b.y + 92);
     }
   }
@@ -4963,13 +4966,13 @@ function drawModCards() {
     ctx.strokeStyle = active ? "#ff9de2" : "rgba(255,255,255,.12)";
     ctx.lineWidth = active ? 2 : 1; ctx.stroke();
     ctx.fillStyle = active ? "#ff9de2" : "#e9e6f5";
-    ctx.font = "bold 11px 'Segoe UI', sans-serif";
+    ctx.font = uiFont(11, true);
     ctx.fillText((active ? "✓ " : "") + b.m.name, b.x + b.w / 2, b.y + 24);
     ctx.fillStyle = "rgba(233,230,245,.55)";
-    ctx.font = "10px 'Segoe UI', sans-serif";
+    ctx.font = uiFont(10);
     ctx.fillText(b.m.desc, b.x + b.w / 2, b.y + 44);
     ctx.fillStyle = "#7cff9b";
-    ctx.font = "bold 10px 'Segoe UI', sans-serif";
+    ctx.font = uiFont(10, true);
     ctx.fillText("САМОЦВЕТЫ +" + Math.round((b.m.gemMul - 1) * 100) + "%", b.x + b.w / 2, b.y + 64);
   }
 }
@@ -4986,17 +4989,17 @@ function drawUpgradeCards() {
     ctx.lineWidth = 1.5; ctx.stroke();
 
     ctx.fillStyle = u.color;
-    ctx.font = "bold 11px 'Segoe UI', sans-serif";
+    ctx.font = uiFont(11, true);
     ctx.fillText(u.name, b.x + 12, b.y + 18);
     ctx.fillStyle = "rgba(233,230,245,.5)";
-    ctx.font = "9px 'Segoe UI', sans-serif";
+    ctx.font = uiFont(9);
     ctx.fillText(u.desc, b.x + 12, b.y + 35);
     for (let i = 0; i < 2; i++) {
       ctx.fillStyle = i < lv ? u.color : "rgba(255,255,255,.12)";
       roundRect(b.x + 12 + i * 16, b.y + 46, 12, 7, 3); ctx.fill();
     }
     ctx.fillStyle = max ? "#7cff9b" : canBuy ? "#e9e6f5" : "rgba(255,107,129,.75)";
-    ctx.font = "bold 11px 'Segoe UI', sans-serif";
+    ctx.font = uiFont(11, true);
     ctx.textAlign = "center";
     ctx.fillText(max ? "МАКСИМУМ" : "КУПИТЬ ✦ " + cost, b.x + b.w / 2, b.y + 86);
     ctx.textAlign = "left";
@@ -5020,11 +5023,11 @@ function drawTrials() {
     return acc * (m ? m.gemMul : 1);
   }, 1);
   ctx.fillStyle = "rgba(233,230,245,.6)";
-  ctx.font = "12px 'Segoe UI', sans-serif";
+  ctx.font = uiFont(12);
   ctx.fillText("Самоцветов: ✦ " + saveData.gems + " · до двух модификаторов · множители складываются",
                W / 2, 108);
   ctx.fillStyle = "#ff9de2";
-  ctx.font = "bold 12px 'Segoe UI', sans-serif";
+  ctx.font = uiFont(12, true);
   ctx.fillText("ИТОГОВЫЙ МНОЖИТЕЛЬ ЗАБЕГА: ✦ ×" + totalMul.toFixed(2), W / 2, 126);
 
   drawModeCards();
@@ -5038,12 +5041,12 @@ function drawTrials() {
     roundRect(b.x, b.y, b.w, b.h, 9); ctx.fill();
     ctx.strokeStyle = color; ctx.lineWidth = 1.5; ctx.stroke();
     ctx.fillStyle = color;
-    ctx.font = "bold 15px 'Segoe UI', sans-serif";
+    ctx.font = uiFont(15, true);
     ctx.fillText(label, b.x + b.w / 2, b.y + b.h / 2);
   }
 
   ctx.fillStyle = "rgba(233,230,245,.4)";
-  ctx.font = "11px 'Segoe UI', sans-serif";
+  ctx.font = uiFont(11);
   ctx.fillText("Esc — назад · Enter — начать забег", W / 2, 540);
 }
 
@@ -5068,11 +5071,42 @@ function installAction() {
     if (prompt.userChoice) prompt.userChoice.catch(() => {});
     return;
   }
-  installHintUntil = performance.now() + 7000;
+  state = "install";
+}
+
+function installBackButton() { return { x: 330, y: 486, w: 140, h: 42 }; }
+function installTryButton() { return { x: 490, y: 486, w: 140, h: 42 }; }
+
+function handleInstallClick() {
+  const back = installBackButton();
+  if (mouse.x >= back.x && mouse.x <= back.x + back.w && mouse.y >= back.y && mouse.y <= back.y + back.h) {
+    state = "menu"; sfx("buy"); return;
+  }
+  const tryBtn = installTryButton();
+  if (mouse.x >= tryBtn.x && mouse.x <= tryBtn.x + tryBtn.w && mouse.y >= tryBtn.y && mouse.y <= tryBtn.y + tryBtn.h) {
+    installAction();
+  }
 }
 
 function isInstalled() {
   return (window.matchMedia && matchMedia("(display-mode: standalone)").matches) || navigator.standalone === true;
+}
+
+function isFullscreen() {
+  return !!(document.fullscreenElement || document.webkitFullscreenElement);
+}
+function toggleFullscreen() {
+  const doc = document;
+  if (isFullscreen()) {
+    const exit = doc.exitFullscreen || doc.webkitExitFullscreen;
+    if (exit) { const p = exit.call(doc); if (p && p.catch) p.catch(() => {}); }
+  } else {
+    const req = doc.documentElement.requestFullscreen || doc.documentElement.webkitRequestFullscreen;
+    if (req) { const p = req.call(doc.documentElement); if (p && p.catch) p.catch(() => {}); }
+  }
+}
+function enterFullscreenOnStart() {
+  if (isTouch && !isFullscreen()) toggleFullscreen();
 }
 
 function metaButton() {
@@ -5189,7 +5223,7 @@ function handleSetupClick() {
     for (const b of modButtons()) if (inRect(b)) { toggleMod(b.m.id); return true; }
   } else if (setupStep === 3) {
     for (const b of upgradeCards()) if (inRect(b)) { buyUpgrade(b.u.id); return true; }
-    if (inRect(setupAutoButton())) {
+    if (!isTouch && inRect(setupAutoButton())) {
       settings.autoAim = !settings.autoAim;
       saveSettings(); sfx("buy"); buzz(15);
       return true;
@@ -5204,7 +5238,7 @@ function drawSetupButton(b, label, color) {
   ctx.strokeStyle = color; ctx.lineWidth = 1.5; ctx.stroke();
   ctx.fillStyle = color;
   ctx.textAlign = "center"; ctx.textBaseline = "middle";
-  ctx.font = "bold 14px 'Segoe UI', sans-serif";
+  ctx.font = uiFont(14, true);
   ctx.fillText(label, b.x + b.w / 2, b.y + b.h / 2);
 }
 
@@ -5221,13 +5255,13 @@ function drawSetupCharCards() {
     ctx.beginPath(); ctx.arc(b.x + 26, b.y + 27, 13, 0, 7); ctx.fill();
     ctx.textAlign = "left";
     ctx.fillStyle = unlocked ? "#e9e6f5" : "rgba(233,230,245,.42)";
-    ctx.font = "bold 12px 'Segoe UI', sans-serif";
+    ctx.font = uiFont(12, true);
     ctx.fillText(c.name, b.x + 48, b.y + 18);
     ctx.fillStyle = "rgba(233,230,245,.55)";
-    ctx.font = "9px 'Segoe UI', sans-serif";
+    ctx.font = uiFont(9);
     ctx.fillText(SKILLS[c.skill].name + " · " + c.desc, b.x + 48, b.y + 36);
     ctx.fillStyle = active ? "#7cff9b" : unlocked ? "rgba(233,230,245,.6)" : "#ffd76b";
-    ctx.font = "bold 10px 'Segoe UI', sans-serif";
+    ctx.font = uiFont(10, true);
     ctx.fillText(active ? "✓ ВЫБРАН" : unlocked ? "НАЖМИ, ЧТОБЫ ВЫБРАТЬ" : "ОТКРЫТЬ ✦ " + c.cost, b.x + 48, b.y + 58);
     ctx.textAlign = "center";
   }
@@ -5253,7 +5287,7 @@ function drawSetup() {
     ctx.lineWidth = 1.5; ctx.stroke();
   }
   ctx.fillStyle = "rgba(233,230,245,.65)";
-  ctx.font = "11px 'Segoe UI', sans-serif";
+  ctx.font = uiFont(11);
   ctx.fillText("ШАГ " + (setupStep + 1) + " / " + SETUP_STEPS.length + " · " + SETUP_STEPS[setupStep], W / 2, 126);
 
   if (setupStep === 0) {
@@ -5265,15 +5299,15 @@ function drawSetup() {
     ctx.font = "bold 34px 'Segoe UI', sans-serif";
     ctx.fillText("ИГРАТЬ", W / 2, b.y + 38);
     ctx.fillStyle = "rgba(233,230,245,.62)";
-    ctx.font = "12px 'Segoe UI', sans-serif";
+    ctx.font = uiFont(12);
     ctx.fillText("герой → режим → подготовка → запуск", W / 2, b.y + 72);
     ctx.fillStyle = "rgba(233,230,245,.5)";
-    ctx.font = "12px 'Segoe UI', sans-serif";
+    ctx.font = uiFont(12);
     ctx.fillText("Пять этажей, пять боссов, самоцветы и постоянные улучшения", W / 2, 370);
     ctx.fillText("Управление: WASD/мышь, Space — рывок, Q — навык, E — взаимодействие", W / 2, 396);
   } else if (setupStep === 1) {
     ctx.fillStyle = "rgba(233,230,245,.6)";
-    ctx.font = "12px 'Segoe UI', sans-serif";
+    ctx.font = uiFont(12);
     ctx.fillText("Клик по карточке выбирает героя. Закрытые герои открываются в галерее.", W / 2, 150);
     drawSetupCharCards();
   } else if (setupStep === 2) {
@@ -5281,14 +5315,15 @@ function drawSetup() {
     drawModCards();
   } else if (setupStep === 3) {
     ctx.fillStyle = "rgba(233,230,245,.6)";
-    ctx.font = "12px 'Segoe UI', sans-serif";
+    ctx.font = uiFont(12);
     ctx.fillText("Самоцветов: ✦ " + saveData.gems + " · улучшения действуют во всех забегах", W / 2, 154);
     ctx.fillText("Броня восстанавливается сама через 3 секунды без урона", W / 2, 182);
     ctx.fillText("Награда за забег: ✦ ×" + runGemMultiplier().toFixed(2), W / 2, 210);
-    drawSetupButton(setupAutoButton(),
-      "АВТОНАВОДКА: " + (settings.autoAim !== false ? "ВКЛ" : "ВЫКЛ"), "#8ee6ff");
+    drawSetupButton(setupAutoButton(), isTouch
+      ? "ЦЕЛЬ ВЫБИРАЕТ ИГРА"
+      : "АВТОНАВОДКА: " + (settings.autoAim !== false ? "ВКЛ" : "ВЫКЛ"), "#8ee6ff");
     ctx.fillStyle = "rgba(255,215,107,.7)";
-    ctx.font = "bold 12px 'Segoe UI', sans-serif";
+    ctx.font = uiFont(12, true);
     ctx.fillText("ПОСТОЯННЫЕ УЛУЧШЕНИЯ", W / 2, 364);
     drawUpgradeCards();
   } else {
@@ -5312,11 +5347,11 @@ function drawSetup() {
       const y = 208 + i * 50;
       ctx.textAlign = "right";
       ctx.fillStyle = "rgba(233,230,245,.45)";
-      ctx.font = "11px 'Segoe UI', sans-serif";
+      ctx.font = uiFont(11);
       ctx.fillText(label, W / 2 - 20, y);
       ctx.textAlign = "left";
       ctx.fillStyle = color;
-      ctx.font = "bold 13px 'Segoe UI', sans-serif";
+      ctx.font = uiFont(13, true);
       ctx.fillText(value, W / 2 + 8, y);
     });
     ctx.textAlign = "center";
@@ -5325,7 +5360,7 @@ function drawSetup() {
   drawSetupButton(setupBackButton(), setupStep === 0 ? "В МЕНЮ" : "НАЗАД", "#8ee6ff");
   drawSetupButton(setupNextButton(), setupStep === 4 ? "ЗАПУСК" : "ДАЛЬШЕ", "#ffd76b");
   ctx.fillStyle = "rgba(233,230,245,.4)";
-  ctx.font = "11px 'Segoe UI', sans-serif";
+  ctx.font = uiFont(11);
   ctx.fillText("Enter — дальше · Esc — назад", W / 2, 540);
 }
 
@@ -5341,7 +5376,7 @@ function drawMenu() {
   ctx.fillText("ПОДЗЕМНЫЙ РЫЦАРЬ", W / 2, 132);
 
   ctx.fillStyle = "#8ee6ff";
-  ctx.font = "15px 'Segoe UI', sans-serif";
+  ctx.font = uiFont(15);
   ctx.fillText("5 этажей · 5 боссов · 6 героев · 15 оружий · испытания", W / 2, 178);
 
   for (const [b, label, color] of [
@@ -5353,7 +5388,7 @@ function drawMenu() {
     roundRect(b.x, b.y, b.w, b.h, 8); ctx.fill();
     ctx.strokeStyle = color; ctx.lineWidth = 1.5; ctx.stroke();
     ctx.fillStyle = color;
-    ctx.font = "bold 12px 'Segoe UI', sans-serif";
+    ctx.font = uiFont(12, true);
     ctx.fillText(label, b.x + b.w / 2, b.y + b.h / 2);
   }
 
@@ -5366,37 +5401,22 @@ function drawMenu() {
   roundRect(ib.x, ib.y, ib.w, ib.h, 8); ctx.fill();
   ctx.strokeStyle = installColor; ctx.lineWidth = 1.5; ctx.stroke();
   ctx.fillStyle = installColor;
-  ctx.font = "bold 11px 'Segoe UI', sans-serif";
+  ctx.font = uiFont(11, true);
   ctx.fillText(installLabel, ib.x + ib.w / 2, ib.y + ib.h / 2);
 
   const lines = isTouch ? [
-    "Джойстик слева · прицел и огонь справа",
-    "Кнопки: рывок, навык Q, перезарядка, оружие, E"
+    "Джойстик слева · одна кнопка: огонь или взаимодействие",
+    "Цель игра выбирает сама · рывок, Q, клинок, перезарядка, оружие"
   ] : [
     "WASD — движение · мышь — прицел и огонь",
     "Space — рывок · Q — навык · R — перезарядка · 1–4 — оружие"
   ];
   ctx.fillStyle = "rgba(233,230,245,.62)";
-  ctx.font = "13px 'Segoe UI', sans-serif";
+  ctx.font = uiFont(13);
   lines.forEach((t, i) => ctx.fillText(t, W / 2, 214 + i * 22));
 
-  if (performance.now() < installHintUntil) {
-    ctx.fillStyle = "rgba(8,8,16,.95)";
-    roundRect(W / 2 - 350, 190, 700, 64, 12); ctx.fill();
-    ctx.strokeStyle = "#8ee6ff"; ctx.lineWidth = 1.5; ctx.stroke();
-    ctx.fillStyle = "#e9e6f5";
-    ctx.font = "13px 'Segoe UI', sans-serif";
-    ctx.fillText(isTouch
-      ? "iPhone/iPad: «Поделиться» → «На главный экран». Android: меню браузера → «Установить приложение»."
-      : "Открой сайт на телефоне по HTTPS: меню браузера → «Установить приложение».",
-      W / 2, 212);
-    ctx.fillStyle = "rgba(233,230,245,.55)";
-    ctx.font = "11px 'Segoe UI', sans-serif";
-    ctx.fillText("Если пункта «Установить» нет — обнови страницу и проверь, что сайт открывается по HTTPS", W / 2, 236);
-  }
-
   ctx.fillStyle = "rgba(142,230,255,.7)";
-  ctx.font = "bold 12px 'Segoe UI', sans-serif";
+  ctx.font = uiFont(12, true);
   ctx.fillText("ВЫБЕРИ ГЕРОЯ", W / 2, 334);
 
   for (const b of characterCards()) {
@@ -5412,20 +5432,20 @@ function drawMenu() {
 
     ctx.textAlign = "left";
     ctx.fillStyle = locked ? "rgba(233,230,245,.4)" : "#e9e6f5";
-    ctx.font = "bold 13px 'Segoe UI', sans-serif";
+    ctx.font = uiFont(13, true);
     ctx.fillText(b.c.name, b.x + 46, b.y + 17);
     ctx.fillStyle = "rgba(233,230,245,.55)";
-    ctx.font = "10px 'Segoe UI', sans-serif";
+    ctx.font = uiFont(10);
     ctx.fillText(locked ? "✦ " + b.c.cost + " · открыть" : SKILLS[b.c.skill].name, b.x + 46, b.y + 34);
     ctx.fillStyle = "rgba(233,230,245,.35)";
-    ctx.font = "9px 'Segoe UI', sans-serif";
+    ctx.font = uiFont(9);
     ctx.fillText(b.c.desc, b.x + 46, b.y + 48);
     ctx.textAlign = "center";
   }
 
   if (saveData.bestRooms) {
     ctx.fillStyle = "rgba(124,255,155,.75)";
-    ctx.font = "13px 'Segoe UI', sans-serif";
+    ctx.font = uiFont(13);
     ctx.fillText(
       "Лучший забег: этаж " + (saveData.bestFloor || 1) + " · " + saveData.bestRooms + " комнат · " + (saveData.bestKills || 0) + " убийств" +
       (saveData.wins ? " · побед: " + saveData.wins : ""),
@@ -5435,13 +5455,93 @@ function drawMenu() {
 
   const pulse = .55 + Math.sin(performance.now() / 350) * .25;
   ctx.fillStyle = `rgba(255,215,107,${pulse})`;
-  ctx.font = "bold 18px 'Segoe UI', sans-serif";
+  ctx.font = uiFont(18, true);
   ctx.fillText(isTouch ? "КОСНИСЬ ЭКРАНА, ЧТОБЫ НАЧАТЬ" : "НАЖМИ ENTER ИЛИ КЛИКНИ, ЧТОБЫ НАЧАТЬ", W / 2, 524);
 
   ctx.fillStyle = "rgba(233,230,245,.3)";
-  ctx.font = "11px 'Segoe UI', sans-serif";
+  ctx.font = uiFont(11);
   ctx.textAlign = "right";
   ctx.fillText("v" + VERSION, W - 24, 556);
+  ctx.textAlign = "center";
+}
+
+function drawInstallGuide() {
+  ctx.textAlign = "center";
+  ctx.textBaseline = "middle";
+
+  ctx.fillStyle = "rgba(6,6,14,.72)";
+  ctx.fillRect(0, 0, W, H);
+  ctx.fillStyle = "rgba(16,16,30,.98)";
+  roundRect(130, 72, 700, 470, 18); ctx.fill();
+  ctx.strokeStyle = "rgba(142,230,255,.45)"; ctx.lineWidth = 2; ctx.stroke();
+
+  ctx.fillStyle = "#8ee6ff";
+  ctx.font = uiFont(22, true);
+  ctx.fillText("УСТАНОВКА ИГРЫ", W / 2, 110);
+  ctx.fillStyle = "rgba(233,230,245,.6)";
+  ctx.font = uiFont(12);
+  ctx.fillText("Игра работает офлайн и занимает место на главном экране", W / 2, 140);
+
+  const steps = isTouch ? [
+    ["1", "Открой страницу в Chrome, подожди 30 секунд и",
+     "   коснись экрана — иначе пункт установки скрыт."],
+    ["2", "Меню Chrome ⋮ → «Установить приложение».",
+     "   Если там только «Добавить на главный экран» — это ярлык, не PWA."],
+    ["3", "iPhone/iPad: «Поделиться» → «На главный экран».",
+     "   В Safari это и есть установка — игра откроется без панели браузера."]
+  ] : [
+    ["1", "Открой эту страницу на телефоне в Chrome по HTTPS.",
+     "   Ссылка: " + location.host],
+    ["2", "Подожди 30 секунд и коснись экрана — иначе пункт установки скрыт."],
+    ["3", "Меню Chrome ⋮ → «Установить приложение»."]
+  ];
+
+  ctx.textAlign = "left";
+  let y = 176;
+  for (const [n, a, b] of steps) {
+    ctx.fillStyle = "rgba(124,255,155,.14)";
+    ctx.beginPath(); ctx.arc(180, y + 8, 15, 0, 7); ctx.fill();
+    ctx.fillStyle = "#7cff9b";
+    ctx.font = uiFont(13, true);
+    ctx.textAlign = "center";
+    ctx.fillText(n, 180, y + 8);
+    ctx.textAlign = "left";
+    ctx.fillStyle = "#e9e6f5";
+    ctx.font = uiFont(13);
+    ctx.fillText(a, 208, y);
+    if (b) { ctx.fillStyle = "rgba(233,230,245,.6)"; ctx.fillText(b, 208, y + 22); }
+    y += b ? 58 : 44;
+  }
+
+  const tapped = pageFirstTouch > 0;
+  const waited = (performance.now() - Math.max(pageOpenedAt, pageFirstTouch || pageOpenedAt)) / 1000 >= 30;
+  const https = location.protocol === "https:" || ["localhost", "127.0.0.1"].includes(location.hostname);
+  ctx.fillStyle = "rgba(255,255,255,.04)";
+  roundRect(162, 388, 636, 66, 10); ctx.fill();
+  ctx.fillStyle = "rgba(233,230,245,.8)";
+  ctx.font = uiFont(11, true);
+  ctx.fillText("ПРОВЕРКА:", 180, 408);
+  ctx.font = uiFont(11);
+  ctx.fillStyle = https ? "#7cff9b" : "#ff9d4d";
+  ctx.fillText((https ? "✓" : "✗") + " HTTPS", 290, 408);
+  ctx.fillStyle = tapped ? "#7cff9b" : "#ffd76b";
+  ctx.fillText((tapped ? "✓" : "✗") + " касание", 390, 408);
+  ctx.fillStyle = waited ? "#7cff9b" : "#ffd76b";
+  ctx.fillText((waited ? "✓" : "✗") + " 30 секунд", 510, 408);
+  ctx.fillStyle = deferredInstallPrompt ? "#7cff9b" : "rgba(233,230,245,.55)";
+  ctx.fillText((deferredInstallPrompt ? "✓ диалог готов" : "○ диалог не готов"), 180, 434);
+
+  const back = installBackButton();
+  const tryBtn = installTryButton();
+  for (const [b, label, color] of [[back, "НАЗАД", "#8ee6ff"], [tryBtn, isInstalled() ? "УСТАНОВЛЕНО" : deferredInstallPrompt ? "УСТАНОВИТЬ" : "ПОВТОРИТЬ", "#7cff9b"]]) {
+    ctx.fillStyle = hexA(color, .14);
+    roundRect(b.x, b.y, b.w, b.h, 10); ctx.fill();
+    ctx.strokeStyle = color; ctx.lineWidth = 2; ctx.stroke();
+    ctx.fillStyle = color;
+    ctx.font = uiFont(13, true);
+    ctx.textAlign = "center";
+    ctx.fillText(label, b.x + b.w / 2, b.y + b.h / 2);
+  }
   ctx.textAlign = "center";
 }
 
@@ -5496,7 +5596,7 @@ function drawHeroes() {
   ctx.font = "bold 26px 'Segoe UI', sans-serif";
   ctx.fillText("ГАЛЕРЕЯ ГЕРОЕВ И УЛУЧШЕНИЙ", W / 2, 80);
   ctx.fillStyle = "rgba(233,230,245,.6)";
-  ctx.font = "12px 'Segoe UI', sans-serif";
+  ctx.font = uiFont(12);
   ctx.fillText("Самоцветов: ✦ " + saveData.gems + " · улучшения действуют во всех забегах", W / 2, 108);
 
   for (const b of heroCards()) {
@@ -5515,16 +5615,16 @@ function drawHeroes() {
 
     ctx.textAlign = "left";
     ctx.fillStyle = unlocked ? "#e9e6f5" : "rgba(233,230,245,.45)";
-    ctx.font = "bold 13px 'Segoe UI', sans-serif";
+    ctx.font = uiFont(13, true);
     ctx.fillText(c.name, b.x + 48, b.y + 18);
     ctx.fillStyle = "rgba(233,230,245,.5)";
-    ctx.font = "9px 'Segoe UI', sans-serif";
+    ctx.font = uiFont(9);
     ctx.fillText(c.desc + " · HP " + c.hp + " · урон ×" + c.damage, b.x + 48, b.y + 35);
     ctx.fillStyle = unlocked ? SKILLS[c.skill].color : "rgba(233,230,245,.32)";
-    ctx.font = "bold 9px 'Segoe UI', sans-serif";
+    ctx.font = uiFont(9, true);
     ctx.fillText("Q: " + SKILLS[c.skill].name, b.x + 12, b.y + 54);
     ctx.fillStyle = "rgba(233,230,245,.38)";
-    ctx.font = "9px 'Segoe UI', sans-serif";
+    ctx.font = uiFont(9);
     ctx.fillText(SKILLS[c.skill].desc, b.x + 12, b.y + 68, 118);
 
     const btn = b.btn;
@@ -5534,21 +5634,21 @@ function drawHeroes() {
     ctx.strokeStyle = canBuy ? (unlocked ? c.color : "#ffd76b") : "rgba(255,107,129,.4)";
     ctx.lineWidth = 1.5; ctx.stroke();
     ctx.fillStyle = canBuy ? "#e9e6f5" : "rgba(255,107,129,.7)";
-    ctx.font = "bold 10px 'Segoe UI', sans-serif";
+    ctx.font = uiFont(10, true);
     ctx.textAlign = "center";
     ctx.fillText(active ? "ВЫБРАН" : unlocked ? "ВЫБРАТЬ" : "ОТКРЫТЬ ✦ " + c.cost, btn.x + btn.w / 2, btn.y + btn.h / 2);
     ctx.textAlign = "left";
   }
 
   ctx.fillStyle = "rgba(255,215,107,.7)";
-  ctx.font = "bold 12px 'Segoe UI', sans-serif";
+  ctx.font = uiFont(12, true);
   ctx.fillText("ПОСТОЯННЫЕ УЛУЧШЕНИЯ", 70, 366);
 
   drawUpgradeCards();
 
   ctx.textAlign = "center";
   ctx.fillStyle = "rgba(233,230,245,.5)";
-  ctx.font = "12px 'Segoe UI', sans-serif";
+  ctx.font = uiFont(12);
   ctx.fillText("Открыто " + saveData.unlockedChars.length + " из " + CHARACTERS.length + " · клик или Esc — назад", W / 2, 534);
 }
 
@@ -5564,13 +5664,13 @@ function drawAchievements() {
   ctx.font = "bold 26px 'Segoe UI', sans-serif";
   ctx.fillText("ДОСТИЖЕНИЯ И ЗАДАНИЯ", W / 2, 82);
   ctx.fillStyle = "rgba(233,230,245,.5)";
-  ctx.font = "12px 'Segoe UI', sans-serif";
+  ctx.font = uiFont(12);
   ctx.fillText("Задания обновляются каждый день · нажми Esc, чтобы вернуться", W / 2, 108);
 
   const daily = ensureDaily();
   ctx.textAlign = "left";
   ctx.fillStyle = "#8ee6ff";
-  ctx.font = "bold 15px 'Segoe UI', sans-serif";
+  ctx.font = uiFont(15, true);
   ctx.fillText("ЗАДАНИЯ НА СЕГОДНЯ", 92, 140);
 
   dailyQuests().forEach((q, i) => {
@@ -5581,10 +5681,10 @@ function drawAchievements() {
     roundRect(92, y, 350, 64, 9); ctx.fill();
     ctx.strokeStyle = done ? "#7cff9b" : "rgba(255,255,255,.12)"; ctx.lineWidth = 1.5; ctx.stroke();
     ctx.fillStyle = done ? "#7cff9b" : "#e9e6f5";
-    ctx.font = "bold 13px 'Segoe UI', sans-serif";
+    ctx.font = uiFont(13, true);
     ctx.fillText(q.title, 106, y + 20);
     ctx.fillStyle = "rgba(233,230,245,.55)";
-    ctx.font = "11px 'Segoe UI', sans-serif";
+    ctx.font = uiFont(11);
     ctx.fillText(done ? "ВЫПОЛНЕНО · +75 монет" : Math.min(cur, q.target) + " / " + q.target, 106, y + 38);
     ctx.fillStyle = "rgba(255,255,255,.08)";
     roundRect(106, y + 48, 322, 7, 3); ctx.fill();
@@ -5593,7 +5693,7 @@ function drawAchievements() {
   });
 
   ctx.fillStyle = "#ff9de2";
-  ctx.font = "bold 15px 'Segoe UI', sans-serif";
+  ctx.font = uiFont(15, true);
   ctx.fillText("ДОСТИЖЕНИЯ", 490, 140);
   ACHIEVEMENTS.forEach((a, i) => {
     const col = i % 2, row = Math.floor(i / 2);
@@ -5603,17 +5703,17 @@ function drawAchievements() {
     roundRect(x, y, 188, 24, 5); ctx.fill();
     ctx.strokeStyle = got ? "#ffd76b" : "rgba(255,255,255,.1)"; ctx.lineWidth = 1.2; ctx.stroke();
     ctx.fillStyle = got ? "#ffd76b" : "rgba(233,230,245,.35)";
-    ctx.font = "bold 8px 'Segoe UI', sans-serif";
+    ctx.font = uiFont(8, true);
     ctx.fillText((got ? "★ " : "☆ ") + a.name, x + 8, y + 9);
     ctx.fillStyle = got ? "rgba(233,230,245,.65)" : "rgba(233,230,245,.3)";
-    ctx.font = "7px 'Segoe UI', sans-serif";
+    ctx.font = uiFont(7);
     ctx.fillText(a.desc, x + 8, y + 18);
   });
 
   const unlocked = ACHIEVEMENTS.filter(a => saveData.achievements[a.id]).length;
   ctx.textAlign = "center";
   ctx.fillStyle = "rgba(233,230,245,.55)";
-  ctx.font = "12px 'Segoe UI', sans-serif";
+  ctx.font = uiFont(12);
   ctx.fillText("Открыто " + unlocked + " из " + ACHIEVEMENTS.length + " · клик или Esc — назад", W / 2, 534);
 }
 
@@ -5629,16 +5729,16 @@ function drawEnd(win) {
   ctx.font = "bold 40px 'Segoe UI', sans-serif";
   ctx.fillText(win ? "ПОБЕДА!" : "ТЫ ПОГИБ", W / 2, 210);
   ctx.fillStyle = "rgba(233,230,245,.8)";
-  ctx.font = "15px 'Segoe UI', sans-serif";
+  ctx.font = uiFont(15);
   ctx.fillText(win ? "Все пять этажей пройдены. Подземелье свободно." : "Подземелье ждёт новой попытки.", W / 2, 256);
-  ctx.font = "14px 'Segoe UI', sans-serif";
+  ctx.font = uiFont(14);
   ctx.fillStyle = "rgba(233,230,245,.6)";
   ctx.fillText("Этаж: " + game.floor + "     Комнат: " + game.roomCount + "     Убийств: " + game.killCount, W / 2, 310);
   ctx.fillText("Монет: " + game.coins + "     Реликвий: " + game.relics.length, W / 2, 334);
   ctx.fillText("Оружий: " + game.player.weapons.length + "     Времени: " + Math.floor(game.time) + " с     Сид: " + game.seed, W / 2, 360);
   const pulse = .55 + Math.sin(performance.now() / 350) * .25;
   ctx.fillStyle = `rgba(255,215,107,${pulse})`;
-  ctx.font = "bold 17px 'Segoe UI', sans-serif";
+  ctx.font = uiFont(17, true);
   ctx.fillText(isTouch ? "КОСНИСЬ ЭКРАНА, ЧТОБЫ ЕЩЁ" : "НАЖМИ R ИЛИ ENTER", W / 2, 402);
 }
 
@@ -5674,6 +5774,10 @@ window.addEventListener("keydown", e => {
   if (["Space", "ArrowUp", "ArrowDown", "ArrowLeft", "ArrowRight"].includes(e.code)) e.preventDefault();
   ensureAudio();
 
+  if (state === "install") {
+    if (e.code === "Escape" || e.code === "Enter" || e.code === "KeyP") state = "menu";
+    return;
+  }
   if (state === "menu") {
     if (e.code === "ArrowLeft" || e.code === "KeyA" || e.code === "ArrowRight" || e.code === "KeyD") {
       const pool = CHARACTERS.filter(c => charUnlocked(c.id));
@@ -5764,7 +5868,8 @@ window.addEventListener("keyup", e => { keys[e.code] = false; });
 function clearInput() {
   mouse.down = false;
   touch.moveId = null;
-  touch.aimId = null;
+  touch.attackId = null;
+  touch.interactMode = false;
   touch.moveVec.x = touch.moveVec.y = 0;
   for (const k in keys) keys[k] = false;
 }
@@ -5776,6 +5881,7 @@ document.addEventListener("visibilitychange", () => {
 
 function handleUiClick() {
   if (state === "menu") { handleMenuClick(); return true; }
+  if (state === "install") { handleInstallClick(); return true; }
   if (state === "setup") { handleSetupClick(); return true; }
   if (state === "achievements") { state = "menu"; sfx("buy"); return true; }
   if (state === "heroes") {
@@ -5807,12 +5913,29 @@ function touchButtonAt(x, y) {
   return TOUCH_BTNS.find(b => dist(x, y, b.x, b.y) <= b.r + 10);
 }
 
+function nearbyInteractable() {
+  if (!game || state !== "playing") return false;
+  const room = currentRoom();
+  const p = game.player;
+  const targets = [
+    ["stairs", 82], ["cage", 86], ["chest", 70], ["crack", 80]
+  ];
+  for (const [kind, d] of targets) {
+    const o = room.props.find(o => o.kind === kind && !o.opened && !o.used);
+    if (o && dist(p.x, p.y, o.x, o.y) < d) return true;
+  }
+  return room.type === "shop";
+}
+
 function fireTouchButton(b) {
   if (!game) return;
   if (b.id === "dash") tryDash();
   else if (b.id === "reload") startReload();
   else if (b.id === "weapon") selectWeapon((game.player.wIndex + 1) % game.player.weapons.length);
-  else if (b.id === "interact") interact();
+  else if (b.id === "attack") {
+    if (nearbyInteractable()) interact();
+    else fireWeapon();
+  }
   else if (b.id === "skill") useSkill();
   else if (b.id === "melee") meleeAttack();
   else if (b.id === "pause") togglePause();
@@ -5829,19 +5952,24 @@ canvas.addEventListener("pointerdown", e => {
   if (state !== "playing") return;
 
   const btn = touchButtonAt(x, y);
-  if (btn) { fireTouchButton(btn); return; }
+  if (btn) {
+    if (btn.id === "attack") {
+      touch.attackId = e.pointerId;
+      touch.interactMode = nearbyInteractable();
+      try { canvas.setPointerCapture(e.pointerId); } catch (_) {}
+    }
+    fireTouchButton(btn);
+    return;
+  }
 
   if (x < W * .45) {
     touch.moveId = e.pointerId;
     touch.moveOrigin.x = x;
     touch.moveOrigin.y = y;
     touch.moveVec.x = touch.moveVec.y = 0;
-  } else {
-    touch.aimId = e.pointerId;
-    touch.aimPoint.x = x;
-    touch.aimPoint.y = y;
+    try { canvas.setPointerCapture(e.pointerId); } catch (_) {}
   }
-  try { canvas.setPointerCapture(e.pointerId); } catch (_) {}
+  // Right side no longer aims manually — the attack button fires at the auto-selected target.
 });
 
 canvas.addEventListener("pointermove", e => {
@@ -5864,10 +5992,6 @@ canvas.addEventListener("pointermove", e => {
       touch.moveVec.y = dy / max;
     }
   }
-  if (e.pointerId === touch.aimId) {
-    touch.aimPoint.x = x;
-    touch.aimPoint.y = y;
-  }
 });
 
 function endTouchPointer(e) {
@@ -5876,7 +6000,10 @@ function endTouchPointer(e) {
     touch.moveId = null;
     touch.moveVec.x = touch.moveVec.y = 0;
   }
-  if (e.pointerId === touch.aimId) touch.aimId = null;
+  if (e.pointerId === touch.attackId) {
+    touch.attackId = null;
+    touch.interactMode = false;
+  }
 }
 canvas.addEventListener("pointerup", endTouchPointer);
 canvas.addEventListener("pointercancel", endTouchPointer);
