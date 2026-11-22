@@ -1,11 +1,13 @@
-const CACHE = "underground-knight-v17";
+const CACHE = "underground-knight-v23";
 const ASSETS = [
   "./",
   "./index.html",
   "./manifest.json",
   "./icon.svg",
   "./icon-192.png",
-  "./icon-512.png"
+  "./icon-512.png",
+  "./icon-maskable-192.png",
+  "./icon-maskable-512.png"
 ];
 
 self.addEventListener("install", event => {
@@ -27,23 +29,25 @@ self.addEventListener("fetch", event => {
   if (event.request.mode === "navigate") {
     event.respondWith(
       fetch(event.request).then(response => {
-        const copy = response.clone();
-        caches.open(CACHE).then(cache => cache.put("./index.html", copy));
+        if (response.ok) {
+          const copy = response.clone();
+          caches.open(CACHE).then(cache => cache.put("./index.html", copy));
+        }
         return response;
-      }).catch(() => caches.match("./index.html"))
+      }).catch(() => caches.match("./index.html").then(cached => cached || Response.error()))
     );
     return;
   }
   event.respondWith(
     caches.match(event.request).then(cached => {
-      if (cached) return cached;
-      return fetch(event.request).then(response => {
-        if (response && response.status === 200 && response.type === "basic") {
+      const network = fetch(event.request).then(response => {
+        if (response.ok && response.type === "basic") {
           const copy = response.clone();
           caches.open(CACHE).then(cache => cache.put(event.request, copy));
         }
         return response;
-      }).catch(() => caches.match("./index.html"));
+      }).catch(() => cached || Response.error());
+      return cached || network;
     })
   );
 });
