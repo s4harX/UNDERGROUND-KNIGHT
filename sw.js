@@ -1,4 +1,4 @@
-const CACHE = "underground-knight-v23";
+const CACHE = "underground-knight-v25";
 const ASSETS = [
   "./",
   "./index.html",

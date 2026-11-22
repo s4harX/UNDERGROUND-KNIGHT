@@ -140,7 +140,8 @@ const WEAPONS = {
   leaper:  { name: "Прыгун", mag: 14, reserve: 84,         rate: .22, reload: 1.3, damage: 18, speed: 600, spread: .02,  count: 1, color: "#ffe27a", r: 4, bounce: 4, chain: 1, energy: .9 },
   inferno: { name: "Солнечная пушка", mag: 5, reserve: 30, rate: .60, reload: 1.8, damage: 18, speed: 400, spread: .04,  count: 1, color: "#ff9d4d", r: 7, fire: true, explosive: 40, energy: 1.8 },
   glacier: { name: "Ледяной меч", mag: 12, reserve: 72,    rate: .30, reload: 1.4, damage: 16, speed: 540, spread: .02,  count: 1, color: "#b8f0ff", r: 5, slow: 3, pierce: 2, energy: .8 },
-  satellite:{name: "Спутники", mag: 3, reserve: 18,        rate: 1.2, reload: 2.1, damage: 12, speed: 520, spread: .01,  count: 1, color: "#7cffcf", r: 5, orbit: 3, life: 3.2, energy: 2.2 }
+  satellite:{name: "Спутники", mag: 3, reserve: 18,        rate: 1.2, reload: 2.1, damage: 12, speed: 520, spread: .01,  count: 1, color: "#7cffcf", r: 5, orbit: 3, life: 3.2, energy: 2.2 },
+  pulse:    { name: "Импульс", mag: 10, reserve: 60,        rate: .42, reload: 1.25,damage: 18, speed: 360, spread: .08,  count: 1, color: "#7cf0ff", r: 6, shock: 46, knock: 180, energy: 1.6 }
 };
 
 const WEAPON_IDS = Object.keys(WEAPONS);
@@ -187,7 +188,8 @@ const SHOP_POOL = [
 const MODES = [
   { id: "normal",   name: "ОБЫЧНЫЙ",   desc: "5 глав × 5 ступеней",     gemMul: 1   },
   { id: "bossRush", name: "БОСС-РАШ",  desc: "5 боссов подряд",         gemMul: 1.5 },
-  { id: "sprint",   name: "СПРИНТ",    desc: "5 глав на время",         gemMul: 1.5 }
+  { id: "sprint",   name: "СПРИНТ",    desc: "5 глав на время",         gemMul: 1.5 },
+  { id: "endless",  name: "БЕСКОНЕЧНЫЙ", desc: "Главы без конца, бонусы за глубину", gemMul: 1.2 }
 ];
 
 const MODIFIERS = [
@@ -226,7 +228,7 @@ const UPGRADES = [
   { id: "gem",    name: "САМОЦВЕТНЫЙ МАГНИТ", desc: "+7% / +14% самоцветов",     costs: [40, 90], bonus: [7, 14], color: "#b8a1ff" }
 ];
 
-const VERSION = "1.19";
+const VERSION = "1.21";
 const SHIELD_REGEN_DELAY = 4.5;
 const SHIELD_REGEN_BASE = 4;
 const SHIELD_REGEN_SCALE = .02;
@@ -421,7 +423,8 @@ const FUSIONS = {
   leaper:    { name: "Вечный прыгун",           damage: 1.4, bounce: 4, color: "#fff0a8" },
   inferno:   { name: "Солнце",                  damage: 1.5, explosive: 18, color: "#ffb36b" },
   glacier:   { name: "Вечная мерзлота",         damage: 1.4, slow: 2, pierce: 2, color: "#d0f4ff" },
-  satellite: { name: "Рой спутников",           damage: 1.5, orbit: 2, color: "#b0ffe4" }
+  satellite: { name: "Рой спутников",           damage: 1.5, orbit: 2, color: "#b0ffe4" },
+  pulse:     { name: "Ударная волна",            damage: 1.35, shock: 30, knock: 120, color: "#9ff7ff" }
 };
 
 function rarityOf(id) {
@@ -722,7 +725,8 @@ const rawRecords = asObject(saveData.records);
 saveData.records = {
   sprintBest: num(rawRecords.sprintBest, 0),
   rushBest: num(rawRecords.rushBest, 0),
-  mostGems: num(rawRecords.mostGems, 0)
+  mostGems: num(rawRecords.mostGems, 0),
+  endlessBest: num(rawRecords.endlessBest, 0)
 };
 saveData.mode = MODES.some(m => m.id === saveData.mode) ? saveData.mode : "normal";
 if (!DIFFICULTY.some(d => d.id === saveData.difficulty)) saveData.difficulty = "normal";
@@ -927,7 +931,11 @@ function shuffle(arr) {
 }
 
 function floorData(n) {
-  return FLOORS[clamp((n || 1) - 1, 0, FLOORS.length - 1)];
+  const idx = Math.max(1, n || 1) - 1;
+  const base = FLOORS[idx % FLOORS.length];
+  const cycle = Math.floor(idx / FLOORS.length);
+  if (!cycle) return base;
+  return { ...base, name: base.name + " +" + cycle, id: base.id, themeId: base.id, cycle };
 }
 function stageLabel(floor = game.floor, stage = game.stage) {
   const f = game && game.mode === "bossRush" ? "B" : Math.max(1, floor || 1);
@@ -1106,6 +1114,9 @@ function sfx(name) {
     case "trap":    tone(140, .12, "sawtooth", .03, 80); break;
     case "block":   tone(240, .09, "square", .03, 420); break;
     case "shatter": tone(1200, .14, "square", .028, 320); tone(1800, .08, "triangle", .016, 640); break;
+    case "portal": tone(520, .12, "sine", .03, 980); tone(820, .14, "triangle", .02, 1280); break;
+    case "death": tone(180, .35, "sawtooth", .05, 70); tone(120, .45, "square", .03, 40); break;
+    case "victory": tone(523, .1, "triangle", .04, 659); setTimeout(() => { tone(659, .1, "triangle", .04, 784); tone(784, .18, "sine", .04, 1046); }, 80); break;
   }
 }
 
@@ -1283,6 +1294,7 @@ function makeGame() {
     mercenaries: [],
     testGems: 0,
     flash: 0,
+    damageFlash: 0,
     transition: 0,
     victoryTimer: -1,
     killCount: 0,
@@ -1317,6 +1329,7 @@ function makeGame() {
       magBonus: 0,
       chainBonus: 0,
       shield: startShield, shieldMax: startShield, shieldRegenT: 0,
+      dispHp: hp, dispShield: startShield, dispEnergy: 60,
       thorns: 0, execute: 0, phoenix: 0, storm: 0, stormTimer: 3.2,
       energy: 60, energyMax: 60, energyRegenT: 0, energyCostMul: 1, energyOnKill: 0,
       hpRegen: 0, coinsOnKill: 0, slowBonus: 0, poisonBonus: 0, reloadMul: 1,
@@ -1339,36 +1352,47 @@ function overlapsObstacle(x, y, r) {
 }
 
 function spawnObstacles(room, count) {
-  for (let i = 0; i < count; i++) {
-    let x, y, ok = false;
-    for (let tries = 0; tries < 30 && !ok; tries++) {
-      x = rand(R.x + 80, R.x + R.w - 80);
-      y = rand(R.y + 80, R.y + R.h - 80);
-      ok = dist(x, y, R.x + R.w / 2, R.y + R.h / 2) > 170 && !overlapsObstacle(x, y, 34);
-    }
-    if (!ok) continue;
-    const roll = rng();
-    const secret = currentRoom().secretBiome;
-    const kind = secret
-      ? (roll < .45 ? "barrier" : roll < .8 ? "barrel" : "pillar")
-      : (roll < .42 ? "box" : roll < .74 ? "barrel" : "pillar");
+  const layout = randi(0, 3);
+  const cx = R.x + R.w / 2, cy = R.y + R.h / 2;
+  const presets = [
+    [{ dx: -150, dy: -90, kind: "pillar" }, { dx: 150, dy: -90, kind: "pillar" }, { dx: -150, dy: 90, kind: "box" }, { dx: 150, dy: 90, kind: "box" }],
+    [{ dx: -120, dy: 0, kind: "barrier" }, { dx: 120, dy: 0, kind: "barrier" }, { dx: 0, dy: -90, kind: "barrel" }, { dx: 0, dy: 90, kind: "box" }],
+    [{ dx: -170, dy: -70, kind: "box" }, { dx: -80, dy: -20, kind: "pillar" }, { dx: 170, dy: 70, kind: "box" }, { dx: 80, dy: 20, kind: "pillar" }],
+    [{ dx: 0, dy: -110, kind: "pillar" }, { dx: -140, dy: 40, kind: "barrel" }, { dx: 140, dy: 40, kind: "barrel" }, { dx: 0, dy: 70, kind: "box" }]
+  ][layout];
+  const place = (kind, x, y) => {
+    if (dist(x, y, cx, cy) < 110 || overlapsObstacle(x, y, 30)) return false;
+    const secret = room.secretBiome;
     const base = {
       kind, x, y,
       r: kind === "pillar" ? 27 : kind === "barrel" ? 22 : kind === "barrier" ? 26 : 24,
       dead: false
     };
-    if (kind === "box") {
-      base.hp = 24;
-      base.color = roomTheme(currentRoom()).accent;
-    } else if (kind === "barrel") {
-      base.color = secret ? (chance(.5) ? "#9ade7a" : "#b8f0ff")
-                          : "#ff8a4d";
+    if (kind === "box") { base.hp = 24; base.color = roomTheme(room).accent; }
+    else if (kind === "barrel") {
+      base.color = secret ? (chance(.5) ? "#9ade7a" : "#b8f0ff") : "#ff8a4d";
       if (secret) base.subtype = base.color === "#9ade7a" ? "toxic" : "frost";
-    } else if (kind === "barrier") {
-      base.hp = 36;
-      base.color = SECRET_THEME.accent;
-    }
+    } else if (kind === "barrier") { base.hp = 36; base.color = SECRET_THEME.accent; }
     room.props.push(base);
+    return true;
+  };
+  const used = Math.min(count, presets.length);
+  for (let i = 0; i < used; i++) {
+    const p = presets[i];
+    place(p.kind, clamp(cx + p.dx + rand(-10, 10), R.x + 70, R.x + R.w - 70), clamp(cy + p.dy + rand(-10, 10), R.y + 70, R.y + R.h - 70));
+  }
+  for (let i = room.props.filter(o => ["box", "barrel", "pillar", "barrier"].includes(o.kind)).length; i < count; i++) {
+    let x, y, ok = false;
+    for (let tries = 0; tries < 30 && !ok; tries++) {
+      x = rand(R.x + 80, R.x + R.w - 80);
+      y = rand(R.y + 80, R.y + R.h - 80);
+      ok = dist(x, y, cx, cy) > 125 && !overlapsObstacle(x, y, 34);
+    }
+    if (!ok) continue;
+    const roll = rng();
+    const kind = room.secretBiome ? (roll < .45 ? "barrier" : roll < .8 ? "barrel" : "pillar")
+      : (roll < .45 ? "box" : roll < .72 ? "barrel" : "pillar");
+    place(kind, x, y);
   }
 }
 
@@ -1473,28 +1497,30 @@ function damageObstacle(o, amount, vx, vy) {
 }
 
 /* ---------- spawning ---------- */
+const RANGED_ENEMIES = new Set(["shooter", "sniper", "laser", "bomber", "turret", "wardenite", "phantom"]);
+
 function enemyTypeForRoll(roll) {
   if (game.floor === 2) {
-    return roll < .16 ? "grunt" : roll < .29 ? "shooter" : roll < .40 ? "charger"
-         : roll < .49 ? "sniper" : roll < .58 ? "bomber" : roll < .69 ? "shielder"
-         : roll < .76 ? "splitter" : roll < .83 ? "turret" : roll < .89 ? "laser"
-         : roll < .95 ? "miner" : "reflector";
+    return roll < .12 ? "grunt" : roll < .26 ? "shooter" : roll < .35 ? "charger"
+         : roll < .45 ? "sniper" : roll < .55 ? "bomber" : roll < .64 ? "shielder"
+         : roll < .70 ? "splitter" : roll < .78 ? "turret" : roll < .86 ? "laser"
+         : roll < .91 ? "miner" : roll < .96 ? "wardenite" : "reflector";
   }
   if (game.floor === 3) {
-    return roll < .10 ? "grunt" : roll < .22 ? "shooter" : roll < .32 ? "charger"
-         : roll < .41 ? "sniper" : roll < .49 ? "bomber" : roll < .58 ? "shielder"
-         : roll < .66 ? "splitter" : roll < .73 ? "turret" : roll < .80 ? "laser"
-         : roll < .86 ? "miner" : roll < .93 ? "phantom" : "reflector";
+    return roll < .08 ? "grunt" : roll < .19 ? "shooter" : roll < .27 ? "charger"
+         : roll < .36 ? "sniper" : roll < .44 ? "bomber" : roll < .51 ? "shielder"
+         : roll < .57 ? "splitter" : roll < .65 ? "turret" : roll < .73 ? "laser"
+         : roll < .79 ? "miner" : roll < .86 ? "phantom" : roll < .93 ? "wardenite" : "reflector";
   }
   if (game.floor >= 4) {
-    return roll < .08 ? "grunt" : roll < .18 ? "shooter" : roll < .27 ? "charger"
-         : roll < .36 ? "sniper" : roll < .44 ? "bomber" : roll < .53 ? "shielder"
-         : roll < .61 ? "splitter" : roll < .68 ? "turret" : roll < .75 ? "laser"
-         : roll < .82 ? "miner" : roll < .90 ? "phantom" : "reflector";
+    return roll < .06 ? "grunt" : roll < .16 ? "shooter" : roll < .23 ? "charger"
+         : roll < .32 ? "sniper" : roll < .40 ? "bomber" : roll < .47 ? "shielder"
+         : roll < .53 ? "splitter" : roll < .61 ? "turret" : roll < .70 ? "laser"
+         : roll < .75 ? "miner" : roll < .84 ? "phantom" : roll < .93 ? "wardenite" : "reflector";
   }
-  return roll < .30 ? "grunt" : roll < .48 ? "shooter" : roll < .63 ? "charger"
-       : roll < .74 ? "sniper" : roll < .83 ? "bomber" : roll < .90 ? "turret"
-       : roll < .96 ? "miner" : "splitter";
+  return roll < .22 ? "grunt" : roll < .40 ? "shooter" : roll < .50 ? "charger"
+       : roll < .62 ? "sniper" : roll < .71 ? "bomber" : roll < .80 ? "turret"
+       : roll < .87 ? "miner" : roll < .93 ? "laser" : roll < .97 ? "wardenite" : "splitter";
 }
 
 function arenaSpawnPoint() {
@@ -1507,11 +1533,19 @@ function arenaSpawnPoint() {
 
 function spawnArenaWave(room) {
   const threat = Math.max(1, game.threat || threatLevel());
-  const n = Math.min(16, 3 + room.wave * 2 + Math.floor((threat - 1) / 2));
+  const n = Math.min(14, 4 + room.wave * 2 + Math.floor((threat - 1) / 3));
   const elite = (room.wave === 1 || threat >= 6) && game.elitesThisFloor < 3 && chance(.7);
+  const rangedMin = Math.max(2, Math.ceil(n * .4));
+  const types = [];
+  for (let i = 0; i < n; i++) types.push(enemyTypeForRoll(rng()));
+  for (let i = 0; i < rangedMin; i++) {
+    if (types.filter(t => RANGED_ENEMIES.has(t)).length >= rangedMin) break;
+    const idx = types.findIndex(t => !RANGED_ENEMIES.has(t));
+    if (idx >= 0) types[idx] = pick(["shooter", "sniper", "laser", "turret", "wardenite"]);
+  }
   for (let i = 0; i < n; i++) {
     const p = arenaSpawnPoint();
-    room.props.push(makeEnemy(enemyTypeForRoll(rng()), p.x, p.y, elite && i === 0));
+    room.props.push(makeEnemy(types[i], p.x, p.y, elite && i === 0));
   }
   if (elite) game.elitesThisFloor++;
   if (room.wave >= 1) {
@@ -1531,9 +1565,18 @@ function spawnAmbush(room) {
   const threat = Math.max(1, game.threat || threatLevel());
   const n = Math.min(12, 4 + Math.floor(threat * .8) + randi(0, 2));
   room.armed = true;
+  const types = [];
+  for (let i = 0; i < n; i++) types.push(enemyTypeForRoll(rng()));
+  // Ambush should pressure from range immediately.
+  const rangedMin = Math.max(2, Math.ceil(n * .45));
+  for (let i = 0; i < rangedMin; i++) {
+    if (types.filter(t => RANGED_ENEMIES.has(t)).length >= rangedMin) break;
+    const idx = types.findIndex(t => !RANGED_ENEMIES.has(t));
+    if (idx >= 0) types[idx] = pick(["shooter", "sniper", "laser", "turret", "wardenite"]);
+  }
   for (let i = 0; i < n; i++) {
     const p = arenaSpawnPoint();
-    room.props.push(makeEnemy(enemyTypeForRoll(rng()), p.x, p.y, i === 0 && threat >= 4));
+    room.props.push(makeEnemy(types[i], p.x, p.y, i === 0 && threat >= 4));
   }
   sfx("boss");
   buzz(40);
@@ -1550,7 +1593,7 @@ function generateShopItems(count) {
 
 function rerollPrice() {
   const room = currentRoom();
-  return 20 + game.floor * 15 + (room.rerolls || 0) * 15;
+  return 24 + game.floor * 18 + (room.rerolls || 0) * 18;
 }
 
 function rerollShop() {
@@ -1591,25 +1634,71 @@ function buyShopSlot() {
 
 function spawnRoom(room) {
   if (room.type === "combat") {
-    spawnObstacles(room, 2 + randi(0, 2) + (game.level > 4 ? 1 : 0));
+    const variantRoll = rng();
+    room.variant = variantRoll < .18 ? "sniperNest" : variantRoll < .34 ? "crossfire" : variantRoll < .46 ? "brawlerPit" : "standard";
+    spawnObstacles(room, 3 + randi(1, 3) + (game.level > 4 ? 1 : 0) + (room.variant === "crossfire" ? 1 : 0));
     const threat = Math.max(1, game.threat || threatLevel());
-    const n = Math.min(14, 3 + Math.min(4, Math.floor(game.level * .8)) + randi(0, 2) + Math.floor((threat - 1) / 3));
-    const elite = chance(clamp(.18 + threat * .05, .18, .6)) &&
-                  game.elitesThisFloor < Math.ceil(threat / 3) && game.floorRooms > 1;
+    const n = Math.min(12, 5 + Math.min(3, Math.floor(game.level * .6)) + randi(0, 2) + Math.floor((threat - 1) / 4) + (room.variant === "brawlerPit" ? 1 : 0));
+    const elite = chance(clamp(.18 + threat * .035, .18, .48)) &&
+                  game.elitesThisFloor < Math.max(1, Math.ceil(threat / 3)) && game.floorRooms > 1;
+    const types = [];
+    let rangedMin = Math.max(2, Math.ceil(n * .5));
+    let rangedPool = ["shooter", "sniper", "laser", "bomber", "turret", "wardenite"];
+    if (room.variant === "sniperNest") { rangedMin = Math.max(rangedMin, Math.ceil(n * .68)); rangedPool = ["sniper", "laser", "shooter", "wardenite", "turret"]; }
+    if (room.variant === "crossfire") { rangedMin = Math.max(rangedMin, Math.ceil(n * .58)); rangedPool = ["shooter", "turret", "laser", "bomber", "wardenite"]; }
+    if (room.variant === "brawlerPit") { rangedMin = Math.max(2, Math.ceil(n * .35)); rangedPool = ["shooter", "bomber", "wardenite"]; }
+    for (let i = 0; i < n; i++) types.push(enemyTypeForRoll(rng()));
+    for (let i = 0; i < rangedMin; i++) {
+      if (types.filter(t => RANGED_ENEMIES.has(t)).length >= rangedMin) break;
+      const idx = types.findIndex(t => !RANGED_ENEMIES.has(t));
+      if (idx >= 0) types[idx] = pick(rangedPool);
+    }
+    if (room.variant === "brawlerPit") {
+      for (let i = 0; i < types.length && types.filter(t => !RANGED_ENEMIES.has(t)).length < Math.ceil(n * .55); i++) {
+        if (RANGED_ENEMIES.has(types[i]) && types[i] !== "wardenite") types[i] = pick(["grunt", "charger", "shielder", "splitter"]);
+      }
+    }
+    // Tactical mix: avoid too many same heavy melee rushers in small rooms.
+    if (types.filter(t => t === "charger").length > 2) {
+      const i = types.lastIndexOf("charger"); if (i >= 0) types[i] = pick(rangedPool);
+    }
+    const anchors = room.variant === "crossfire"
+      ? [
+          { x: R.x + R.w * .16, y: R.y + R.h * .2 }, { x: R.x + R.w * .84, y: R.y + R.h * .2 },
+          { x: R.x + R.w * .16, y: R.y + R.h * .8 }, { x: R.x + R.w * .84, y: R.y + R.h * .8 },
+          { x: R.x + R.w * .16, y: R.y + R.h * .5 }, { x: R.x + R.w * .84, y: R.y + R.h * .5 }
+        ]
+      : [
+          { x: R.x + R.w * .22, y: R.y + R.h * .28 }, { x: R.x + R.w * .78, y: R.y + R.h * .28 },
+          { x: R.x + R.w * .22, y: R.y + R.h * .72 }, { x: R.x + R.w * .78, y: R.y + R.h * .72 },
+          { x: R.x + R.w * .5, y: R.y + R.h * .22 }, { x: R.x + R.w * .5, y: R.y + R.h * .78 }
+        ];
     for (let i = 0; i < n; i++) {
-      const p = randomSpawnPoint(90);
-      room.props.push(makeEnemy(enemyTypeForRoll(rng()), p.x, p.y, elite && i === 0));
+      const type = types[i];
+      let p;
+      if (RANGED_ENEMIES.has(type) && chance(room.variant === "sniperNest" ? .9 : .75)) {
+        const a = anchors[i % anchors.length];
+        p = { x: clamp(a.x + rand(-36, 36), R.x + 70, R.x + R.w - 70), y: clamp(a.y + rand(-30, 30), R.y + 70, R.y + R.h - 70) };
+        if (dist(p.x, p.y, R.x + R.w / 2, R.y + R.h / 2) < 120 || overlapsObstacle(p.x, p.y, 20)) p = randomSpawnPoint(110);
+      } else {
+        p = randomSpawnPoint(room.variant === "brawlerPit" ? 75 : 90);
+      }
+      room.props.push(makeEnemy(type, p.x, p.y, elite && i === 0));
     }
     if (elite) game.elitesThisFloor++;
-    const trapCount = game.level > 1 && chance(.55) ? randi(2, 4) : 0;
+    const trapCount = game.level > 1 && chance(room.variant === "crossfire" ? .6 : .45) ? randi(1, 3) : 0;
     for (let i = 0; i < trapCount; i++) {
-      const p = randomSpawnPoint(110);
+      const p = randomSpawnPoint(120);
       room.props.push({
         kind: "trap", x: p.x, y: p.y, r: 26,
         damage: Math.min(46, 8 + game.level * 2),
         color: floorData(game.floor).trap,
         timer: rand(.8, 1.6), active: 0
       });
+    }
+    if (room.variant && room.variant !== "standard") {
+      const names = { sniperNest: "СНАЙПЕРСКОЕ ГНЕЗДО", crossfire: "ПЕРЕКРЁСТНЫЙ ОГОНЬ", brawlerPit: "ЯМА ДРАЧУНОВ" };
+      floater(names[room.variant] || "ВАРИАНТ", W / 2, R.y + 92, "#ffb36b");
     }
     if (room.secret) {
       room.props.push({
@@ -1642,13 +1731,11 @@ function spawnRoom(room) {
     floater("КОМНАТА ИСПЫТАНИЯ", W / 2, R.y + 90, "#ffd76b");
   } else if (room.type === "boss") {
     spawnObstacles(room, 2 + randi(0, 2));
-    room.props.push(makeEnemy("boss", R.x + R.w / 2, R.y + 130));
-    if (game.floor >= 3 && chance(.55)) {
-      room.props.push(makeEnemy("twin", R.x + 110, R.y + 240));
-      floater("БОСС-БЛИЗНЕЦ!", R.x + 110, R.y + 200, "#b8a1ff");
-    }
+    room.bossIntro = 2.8;
+    room.bossPending = true;
     room.cleared = false;
     sfx("boss");
+    floater("⚠ БОСС ГЛАВЫ " + game.floor, W / 2, R.y + 100, "#ff6b81");
   } else if (room.type === "secret") {
     spawnObstacles(room, 3 + randi(0, 2));
     for (let i = 0; i < 3; i++) {
@@ -1809,6 +1896,15 @@ function makeEnemy(type, x, y, elite = false) {
     base.contact = 9 + lv;
     base.timer = rand(1.4, 2.4);
     base.phase = rand(0, Math.PI * 2);
+  } else if (type === "wardenite") {
+    /* Pressure enemy: keeps distance and drops short-lived hazard zones. */
+    base.hp = base.maxHp = 44 + lv * 10;
+    base.speed = 48;
+    base.r = 16;
+    base.color = "#ff8f6b";
+    base.contact = 11 + lv;
+    base.timer = rand(1.2, 2.0);
+    base.prefer = 170;
   } else if (type === "boss") {
     const theme = floorData(game.floor);
     base.bossType = theme.boss;
@@ -1844,10 +1940,11 @@ function makeEnemy(type, x, y, elite = false) {
       base.contact = 18 + lv * 2;
     }
     const power = playerPower();
-    const hpMult = clamp(.85 + (power - 1) * .16, .85, 2.2);
+    const hpMult = clamp(.82 + (power - 1) * .1, .82, 1.55);
+    const dmgMult = clamp(1 + (power - 1) * .08, 1, 1.25);
     base.maxHp = base.hp = Math.round(base.hp * hpMult);
-    base.contact = Math.round(base.contact * clamp(1 + (power - 1) * .12, 1, 1.4));
-    base.damageScale = clamp(1 + (power - 1) * .12, 1, 1.4);
+    base.contact = Math.round(base.contact * dmgMult);
+    base.damageScale = dmgMult;
     base.hpMult = hpMult;
     base.frenzied = false;
     base.collapsed = false;
@@ -1886,7 +1983,7 @@ function makeEnemy(type, x, y, elite = false) {
   base.maxHp = base.hp = Math.max(1, Math.round(base.hp * diff.hp * hpMul));
   /* Contact damage is capped so deep stages stay dangerous, not unavoidable. */
   base.contact = clamp(Math.round(base.contact * diff.dmg * dmgMul), 1, 56);
-  base.speed *= 1 + Math.min(.18, (threat - 1) * .008);
+  base.speed *= 1 + Math.min(.14, (threat - 1) * .006);
   if (base.maxShieldHp) base.maxShieldHp = base.shieldHp = Math.round(base.shieldHp * diff.hp * hpMul);
   return base;
 }
@@ -1938,19 +2035,21 @@ function capArray(arr, max) {
 function burst(x, y, color, count = 10, power = 140) {
   if (!settings.particles) return;
   for (let i = 0; i < count; i++) {
-    const a = rand(0, Math.PI * 2), s = rand(power * .3, power);
+    const a = rand(0, Math.PI * 2), s = rand(power * .25, power);
+    const life = rand(.22, .62);
     game.particles.push({
       x, y,
       vx: Math.cos(a) * s, vy: Math.sin(a) * s,
-      life: rand(.25, .6), maxLife: .6,
-      color, size: rand(2, 5)
+      life, maxLife: life,
+      color, size: rand(1.8, 4.8),
+      glow: i % 3 === 0
     });
   }
 }
 
 function floater(text, x, y, color = "#ffffff") {
   if (!game) return;
-  game.floaters.push({ text, x, y, life: 1, color });
+  game.floaters.push({ text, x, y, life: 1, maxLife: 1, color, vy: -28, scale: 1.12 });
 }
 
 /* Short combat log: only notable events, newest first. */
@@ -2062,6 +2161,7 @@ function startGame(seedOverride, opts = {}) {
 function finishRun(win) {
   if (!game || game.saved) return;
   game.saved = true;
+  if (!game.test) sfx(win ? "victory" : "death");
   if (game.test) return;
   saveData.runs = (saveData.runs || 0) + 1;
   saveData.wins = (saveData.wins || 0) + (win ? 1 : 0);
@@ -2089,6 +2189,9 @@ function finishRun(win) {
     earnGems(15);
     const t = Math.round(game.time);
     saveData.bestWinTime = saveData.bestWinTime ? Math.min(saveData.bestWinTime, t) : t;
+  }
+  if (game.mode === "endless") {
+    saveData.records.endlessBest = Math.max(saveData.records.endlessBest || 0, game.floor || 1);
   }
   saveData.records.mostGems = Math.max(saveData.records.mostGems || 0, game.gemsCollected || 0);
   writeSave(saveData);
@@ -2141,7 +2244,8 @@ function enterRoom(dx, dy, target = null) {
 }
 
 function nextFloor() {
-  if (!game || game.floor >= FLOORS.length) return;
+  const endless = game && game.mode === "endless";
+  if (!game || (!endless && game.floor >= FLOORS.length)) return;
   game.floor++;
   logEvent("Глава " + game.floor + " · " + floorData(game.floor).name, floorData(game.floor).accent);
   checkFloorAchievements();
@@ -2190,9 +2294,9 @@ function nextStage() {
   if (!game || game.stage >= game.stageCount || game.transition > 0) return;
   game.pendingStage = game.stage + 1;
   if (state === "buff") return;
-  if (game.stage % BUFF_EVERY !== 0) { finishNextStage(); return; }
+  if (game.stage % BUFF_EVERY !== 0) { sfx("portal"); finishNextStage(); return; }
   buffChoices = buildBuffChoices();
-  if (!buffChoices.length) { finishNextStage(); return; }
+  if (!buffChoices.length) { sfx("portal"); finishNextStage(); return; }
   state = "buff";
   clearInput();
   sfx("relic");
@@ -2217,6 +2321,7 @@ function checkRoomClear() {
       room.type !== "arena" && room.type !== "mini" && room.type !== "secret" &&
       room.type !== "ambush")) return;
   if (room.type === "ambush" && !room.armed) return;
+  if (room.bossPending) return;
   if (room.props.some(o => o.type && !o.dead)) return;
   if (room.type === "arena" && room.wave < room.maxWaves - 1) {
     room.wave++;
@@ -2233,6 +2338,7 @@ function checkRoomClear() {
     game.player.shield = Math.min(game.player.shieldMax, before + Math.ceil((game.player.shieldMax - before) * .5));
     floater("Щит восстановлен", game.player.x, game.player.y - 44, "#ffe27a");
   }
+  if (room.pickups && room.pickups.length) floater("Ресурсы притягиваются", game.player.x, game.player.y - 62, "#8ee6ff");
   trackQuest("rooms", 1);
   if (!game.roomDamaged) unlockAchievement("noHit");
   if (room.type === "arena") unlockAchievement("arena");
@@ -2246,6 +2352,17 @@ function checkRoomClear() {
     earnGems(1);
     floater("СПРИНТ · +1 самоцвет", W / 2, R.y + 96, "#8ee6ff");
   }
+  if (game.mode === "endless") {
+    game.endlessClears = (game.endlessClears || 0) + 1;
+    const bonus = Math.max(1, Math.floor((game.floor - 1) * .5 + 1));
+    if (room.type !== "boss") earnCoins(bonus);
+    if (game.endlessClears % 5 === 0) {
+      const pos = randomSpawnPoint(40);
+      const kind = pick(["heart", "ammo", "energy"]);
+      const val = kind === "heart" ? 18 : kind === "ammo" ? 20 : 10;
+      addPickup(kind, pos.x, pos.y, val);
+    }
+  }
   if (room.secret && room.type === "combat") {
     floater("Трещина в стене! Нажми E", W / 2, R.y + 120, "#ff9de2");
   }
@@ -2257,8 +2374,9 @@ function checkRoomClear() {
         : room.type === "ambush" ? "ЗАСАДА ОТРАЖЕНА!"
         : "Комната зачищена!", W / 2, R.y + 70, "#7cff9b");
   if (room.type === "ambush") {
-    earnCoins(18 + game.threat * 4);
-    floater("+" + (18 + game.threat * 4) + " монет за засаду", W / 2, R.y + 94, "#ffd76b");
+    const ambushCoins = 14 + game.threat * 3;
+    earnCoins(ambushCoins);
+    floater("+" + ambushCoins + " монет за засаду", W / 2, R.y + 94, "#ffd76b");
   }
   if ((room.type === "combat" || room.type === "arena" || room.type === "mini" ||
        room.type === "secret" || room.type === "ambush") && !room.rewardTaken) openReward(room);
@@ -2274,7 +2392,19 @@ function checkRoomClear() {
   if (room.type === "boss") {
     addPickup("weapon", R.x + R.w / 2 - 40, R.y + R.h / 2, 0,
               pick(BOSS_WEAPON_IDS));
-    if (game.floor >= FLOORS.length) {
+    if (game.mode === "endless") {
+      room.props.push({
+        kind: "stairs",
+        x: R.x + R.w / 2 + 40,
+        y: R.y + R.h / 2,
+        r: 30
+      });
+      const gemBonus = 1 + Math.floor((game.floor - 1) / 2);
+      earnGems(gemBonus);
+      floater("БЕСКОНЕЧНЫЙ: +" + gemBonus + "✦", W / 2, R.y + 118, "#ff9de2");
+      floater("Лестница вниз открыта!", R.x + R.w / 2 + 40, R.y + R.h / 2 - 52, "#ffe27a");
+      buzz(50);
+    } else if (game.floor >= FLOORS.length) {
       game.victoryTimer = 1.6;
     } else {
       room.props.push({
@@ -2291,7 +2421,7 @@ function checkRoomClear() {
       openStatue();
     }
   }
-  earnCoins(8 + game.level * 2);
+  earnCoins(10 + Math.min(22, game.level) + game.floor * 2);
 }
 
 /* ---------- actions ---------- */
@@ -3138,6 +3268,7 @@ function fireWeapon() {
     healOnHit: w.healOnHit || 0,
     shock: w.shock || 0,
     stun: w.stun || 0,
+    knock: w.knock || 0,
     hit: []
   });
 
@@ -3335,9 +3466,12 @@ function update(dt) {
     if (f.life <= 0) game.effects.splice(i, 1);
   }
   game.flash = Math.max(0, game.flash - dt * 1.4);
+  game.damageFlash = Math.max(0, (game.damageFlash || 0) - dt * 2.2);
   for (let i = game.floaters.length - 1; i >= 0; i--) {
     const f = game.floaters[i];
-    f.life -= dt; f.y -= 24 * dt;
+    f.life -= dt;
+    f.vy = (f.vy ?? -24) - dt * 8;
+    f.y += f.vy * dt;
     if (f.life <= 0) game.floaters.splice(i, 1);
   }
   capArray(game.particles, 320);
@@ -3374,6 +3508,10 @@ function update(dt) {
   if (p.energyRegenT > 0) p.energyRegenT = Math.max(0, p.energyRegenT - dt);
   p.energy = Math.min(p.energyMax, p.energy + (p.energyRegenT > 0 ? 4 : 22) * dt);
   if (p.hpRegen > 0) p.hp = Math.min(p.maxHp, p.hp + p.hpRegen * dt);
+  const lerp = 1 - Math.exp(-dt * 10);
+  p.dispHp += ((p.hp || 0) - (p.dispHp ?? p.hp)) * lerp;
+  p.dispShield += ((p.shield || 0) - (p.dispShield ?? p.shield)) * lerp;
+  p.dispEnergy += ((p.energy || 0) - (p.dispEnergy ?? p.energy)) * lerp;
   if (p.poisonT > 0) {
     p.poisonT = Math.max(0, p.poisonT - dt);
     p.poisonTick = (p.poisonTick || 0) - dt;
@@ -3499,11 +3637,27 @@ function getPlayerBounds() {
 
 function updateEnemies(dt) {
   const p = game.player;
-  const enemies = currentRoom().props.filter(o => o.type && !o.dead);
+  const room = currentRoom();
+  if (room.type === "boss" && room.bossPending) {
+    room.bossIntro = Math.max(0, (room.bossIntro || 0) - dt);
+    if (room.bossIntro <= 0) {
+      room.bossPending = false;
+      room.props.push(makeEnemy("boss", R.x + R.w / 2, R.y + 130));
+      if (game.floor >= 3 && chance(.55)) {
+        room.props.push(makeEnemy("twin", R.x + 110, R.y + 240));
+        floater("БОСС-БЛИЗНЕЦ!", R.x + 110, R.y + 200, "#b8a1ff");
+      }
+      floater("БОСС ВЫШЕЛ!", W / 2, R.y + 130, "#ff6b81");
+      sfx("boss");
+      shake = Math.max(shake, 6);
+    }
+  }
+  const enemies = room.props.filter(o => o.type && !o.dead);
 
   for (const e of enemies) {
     e.flash = Math.max(0, e.flash - dt);
     e.slowT = Math.max(0, (e.slowT || 0) - dt);
+    e.summonCd = Math.max(0, (e.summonCd || 0) - dt);
     if (e.poisonT > 0) {
       e.poisonT = Math.max(0, e.poisonT - dt);
       if (e.poisonT <= 0) e.poisonDmg = 0;
@@ -3708,6 +3862,24 @@ function updateEnemies(dt) {
         burst(e.x, e.y, e.color, 14, 130);
         enemyBullet(e, Math.atan2(p.y - e.y, p.x - e.x), 190, 10 + game.level, "#d8b8ff");
         sfx("laser");
+      }
+    } else if (e.type === "wardenite") {
+      const want = e.prefer || 170;
+      if (d > want + 30) { e.x += (nx * .8 - ny * .35) * e.speed * dt; e.y += (ny * .8 + nx * .35) * e.speed * dt; }
+      else if (d < want - 25) { e.x -= nx * e.speed * dt; e.y -= ny * e.speed * dt; }
+      else { e.x += -ny * e.speed * .65 * dt; e.y += nx * e.speed * .65 * dt; }
+      e.timer -= dt * (game.mods.indexOf("overload") >= 0 ? 1.2 : 1);
+      if (e.timer <= 0) {
+        e.timer = rand(2.2, 3.4) * (e.elite ? .85 : 1);
+        const tx = clamp(p.x + rand(-24, 24), R.x + 34, R.x + R.w - 34);
+        const ty = clamp(p.y + rand(-24, 24), R.y + 34, R.y + R.h - 34);
+        currentRoom().props.push({
+          kind: "hazard", x: tx, y: ty, r: 34,
+          delay: .55, life: 2.8, maxLife: 2.8, fired: false,
+          color: "#ff8f6b", damage: Math.min(34, 8 + game.level)
+        });
+        burst(tx, ty, "#ff8f6b", 8, 90);
+        sfx("split");
       }
     } else if (e.type === "boss" || e.type === "twin") {
       if (d > 190) { e.x += nx * e.speed * dt; e.y += ny * e.speed * dt; }
@@ -3972,10 +4144,15 @@ function finalBossPattern(e, ds, lv, p) {
     }
   };
   const summon = (types) => {
-    for (const t of types) {
+    if ((e.summonCd || 0) > 0) return;
+    const cap = 6;
+    const alive = room.props.filter(o => o.type && !o.dead && o !== e && !o.isTwin).length;
+    const n = Math.max(0, Math.min(types.length, cap - alive));
+    for (let i = 0; i < n; i++) {
       const q = randomSpawnPoint(70);
-      room.props.push(makeEnemy(t, q.x, q.y));
+      room.props.push(makeEnemy(types[i], q.x, q.y));
     }
+    if (n > 0) e.summonCd = 8;
   };
   if (type === "frost") {
     ring(14, 200, 11 + lv, "#8ee6ff", 0);
@@ -4039,6 +4216,21 @@ function updateTraps(dt) {
 
   for (let i = props.length - 1; i >= 0; i--) {
     const h = props[i];
+    if (h.kind === "hazard") {
+      if (h.delay > 0) {
+        h.delay -= dt;
+        if (h.delay <= 0) { h.fired = true; burst(h.x, h.y, h.color || "#ff8f6b", 10, 120); sfx("trap"); }
+        continue;
+      }
+      h.life -= dt;
+      h.tick = (h.tick || 0) - dt;
+      if (h.tick <= 0) {
+        h.tick = .35;
+        if (dist(p.x, p.y, h.x, h.y) < h.r + p.r * .5) damagePlayer(h.damage || 10);
+      }
+      if (h.life <= 0) props.splice(i, 1);
+      continue;
+    }
     if (h.kind === "fire") {
       h.life -= dt;
       h.tick -= dt;
@@ -4242,6 +4434,11 @@ function updateBullets(dt) {
             e.stunT = Math.max(e.stunT || 0, b.stun);
             burst(e.x, e.y, "#8ee6ff", 8, 90);
           }
+          if (b.knock) {
+            const kl = Math.hypot(b.vx, b.vy) || 1;
+            e.x += b.vx / kl * b.knock * .03;
+            e.y += b.vy / kl * b.knock * .03;
+          }
           if (b.healOnHit) {
             const before = p.hp;
             p.hp = Math.min(p.maxHp, p.hp + b.healOnHit);
@@ -4419,11 +4616,12 @@ function damagePlayer(amount, source) {
   if (rest > 0) game.roomDamaged = true;
   p.invuln = .55;
   p.hitFlash = .18;
-  if (settings.shake) shake = Math.max(shake, 8);
+  game.damageFlash = Math.max(game.damageFlash || 0, rest > 0 ? .28 : .12);
+  if (settings.shake) shake = Math.max(shake, rest > 0 ? 8 : 4);
   burst(p.x, p.y, "#ff5577", 10, 120);
   if (rest > 0) floater("-" + rest, p.x, p.y - 26, "#ff6b81");
   sfx("hurt");
-  buzz(70);
+  buzz(rest > 0 ? 70 : 35);
   if (p.thorns > 0 && source && source.type && !source.dead) {
     damageEnemy(source, dealt * p.thorns, source.x - p.x, source.y - p.y, true);
     burst(source.x, source.y, "#ff9d4d", 6, 80);
@@ -4446,16 +4644,21 @@ function damagePlayer(amount, source) {
 
 function updatePickups(dt) {
   const p = game.player;
-  const list = currentRoom().pickups;
+  const room = currentRoom();
+  const magnetAll = room.cleared && ["combat","boss","arena","mini","secret","ambush"].includes(room.type);
+  const list = room.pickups;
   for (let i = list.length - 1; i >= 0; i--) {
     const it = list[i];
     it.bob += dt * 4;
     it.life -= dt;
+    if (magnetAll) it.life = Math.max(it.life, 1.5);
     if (it.life <= 0) { list.splice(i, 1); continue; }
     const d = dist(p.x, p.y, it.x, it.y);
-    if (d < (p.pickupRange || 95) && d > 1) {
-      it.x += (p.x - it.x) / d * 210 * dt;
-      it.y += (p.y - it.y) / d * 210 * dt;
+    const pullRange = magnetAll ? 9999 : (p.pickupRange || 95);
+    const pullSpeed = magnetAll ? 560 : 210;
+    if (d < pullRange && d > 1) {
+      it.x += (p.x - it.x) / d * pullSpeed * dt;
+      it.y += (p.y - it.y) / d * pullSpeed * dt;
     }
     if (d < p.r + 14) {
       if (it.kind === "heart") {
@@ -4504,19 +4707,43 @@ function draw() {
   drawBullets();
   drawEnemies();
   drawPlayer();
+  drawBossIntro();
   drawEffects();
   drawParticles();
   drawFloaters();
   drawVignette();
+  if (game.damageFlash > 0) {
+    ctx.fillStyle = `rgba(255,70,90,${game.damageFlash * .45})`;
+    ctx.fillRect(0, 0, W, H);
+  }
   if (game.flash > 0) {
     ctx.fillStyle = `rgba(255,190,120,${game.flash * .55})`;
     ctx.fillRect(0, 0, W, H);
+  }
+  if (game.transition > 0) {
+    const a = clamp(game.transition / .6, 0, 1);
+    ctx.fillStyle = `rgba(7,7,15,${a * .55})`;
+    ctx.fillRect(0, 0, W, H);
+    if (a > .18) {
+      ctx.save();
+      ctx.globalAlpha = clamp((a - .18) / .35, 0, 1);
+      ctx.textAlign = "center"; ctx.textBaseline = "middle";
+      ctx.fillStyle = "#f1efff";
+      ctx.font = "bold 28px 'Segoe UI', sans-serif";
+      ctx.fillText(stageLabel(game.floor, game.stage), W / 2, H / 2 - 10);
+      ctx.fillStyle = "rgba(142,230,255,.8)";
+      ctx.font = uiFont(14, true);
+      const room = currentRoom();
+      ctx.fillText(room.type === "boss" ? "БОСС" : room.type === "ambush" ? "ЗАСАДА" : "СТУПЕНЬ", W / 2, H / 2 + 22);
+      ctx.restore();
+    }
   }
   ctx.restore();
 
   if (state === "playing" || state === "paused") {
     drawHUD();
     if (touchMode() || touch.moveId !== null || touch.attackId !== null || touch.drag) drawTouchControls();
+    if (state === "playing") drawInteractionPrompt();
   }
   if (state === "playing" && mapExpanded) drawMapOverlay();
   if (state === "shop") drawShop();
@@ -4524,7 +4751,7 @@ function draw() {
   if (state === "buff") drawBuffChoice();
   if (state === "weaponChoice") drawWeaponChoice();
   if (state === "settings") drawSettings();
-  if (state === "paused") drawCenterPanel("ПАУЗА", isTouch ? "Коснись экрана, чтобы продолжить" : "Нажмите P или Esc, чтобы продолжить", "#8ee6ff");
+  if (state === "paused") drawCenterPanel("ПАУЗА", isTouch ? "Коснись экрана, чтобы продолжить" : ["P / Esc / Enter — продолжить", "M — карта · Q — навык · F — клинок", "E — взаимодействие · R — перезарядка"], "#8ee6ff");
   if (state === "gameover") drawEnd(false);
   if (state === "victory") drawEnd(true);
   if (state === "dev") drawDevTools();
@@ -4534,17 +4761,34 @@ function draw() {
 
 function drawBackdrop() {
   const theme = game ? roomTheme(currentRoom()) : FLOORS[0];
-  const g = ctx.createRadialGradient(W / 2, 40, 40, W / 2, H, 620);
+  const t = (performance.now() || 0) * .00018;
+  const g = ctx.createRadialGradient(W / 2, H * .2, 40, W / 2, H * .55, 720);
   g.addColorStop(0, theme.glow);
-  g.addColorStop(1, "#0b0b13");
+  g.addColorStop(.55, hexA(theme.floorAlt, .9));
+  g.addColorStop(1, "#07070f");
   ctx.fillStyle = g;
   ctx.fillRect(0, 0, W, H);
-  ctx.fillStyle = "rgba(255,255,255,.035)";
-  for (let i = 0; i < 40; i++) {
-    const x = (i * 197 + 43) % W;
-    const y = (i * 89 + 121) % H;
-    ctx.fillRect(x, y, 2, 2);
+
+  /* Subtle moving stars/dust for depth. */
+  ctx.save();
+  for (let i = 0; i < 56; i++) {
+    const baseX = (i * 173 + 31) % W;
+    const baseY = (i * 97 + 53) % H;
+    const x = (baseX + Math.sin(t * 12 + i) * 8 + W) % W;
+    const y = (baseY + Math.cos(t * 8 + i * .7) * 6 + H) % H;
+    const a = .02 + (i % 5) * .012;
+    ctx.fillStyle = i % 7 === 0 ? hexA(theme.accent, a + .03) : `rgba(255,255,255,${a})`;
+    const s = i % 9 === 0 ? 2.5 : 1.5;
+    ctx.fillRect(x, y, s, s);
   }
+  ctx.restore();
+
+  /* Soft vignette frame. */
+  const vg = ctx.createRadialGradient(W / 2, H / 2, H * .2, W / 2, H / 2, H * .85);
+  vg.addColorStop(0, "rgba(0,0,0,0)");
+  vg.addColorStop(1, "rgba(0,0,0,.22)");
+  ctx.fillStyle = vg;
+  ctx.fillRect(0, 0, W, H);
 }
 
 function drawRoom() {
@@ -4557,18 +4801,19 @@ function drawRoom() {
   for (let y = R.y; y < R.y + R.h; y += tile) {
     for (let x = R.x; x < R.x + R.w; x += tile) {
       const h = ((x * 13 + y * 7 + room.seed) | 0) % 11;
+      const tid = theme.themeId || theme.id;
       ctx.fillStyle = h % 3 === 0
-        ? (theme.id === "magma" ? "rgba(255,180,100,.035)" : "rgba(255,255,255,.028)")
+        ? (tid === "magma" ? "rgba(255,180,100,.035)" : "rgba(255,255,255,.028)")
         : "rgba(0,0,0,.05)";
       ctx.fillRect(x + 2, y + 2, tile - 4, tile - 4);
       if (h === 5) {
         ctx.strokeStyle = theme.decor;
         ctx.lineWidth = 2;
         ctx.beginPath();
-        if (theme.id === "magma") {
+        if (tid === "magma") {
           ctx.moveTo(x + 5, y + 26); ctx.lineTo(x + 16, y + 18);
           ctx.lineTo(x + 24, y + 24); ctx.lineTo(x + 35, y + 10);
-        } else if (theme.id === "frost") {
+        } else if (tid === "frost") {
           ctx.moveTo(x + 20, y + 6); ctx.lineTo(x + 27, y + 18);
           ctx.lineTo(x + 20, y + 30); ctx.lineTo(x + 13, y + 18);
           ctx.closePath();
@@ -4647,6 +4892,30 @@ function drawRoom() {
 function drawTraps() {
   const theme = roomTheme(currentRoom());
   for (const o of currentRoom().props) {
+    if (o.kind === "hazard") {
+      const tele = o.delay > 0;
+      const a = tele ? .18 + Math.sin(game.time * 18) * .08 : .28 + Math.sin(game.time * 10) * .05;
+      ctx.save();
+      ctx.translate(o.x, o.y);
+      ctx.fillStyle = hexA(o.color || "#ff8f6b", a);
+      ctx.beginPath(); ctx.arc(0, 0, o.r, 0, 7); ctx.fill();
+      ctx.strokeStyle = hexA("#fff0e8", tele ? .55 : .85);
+      ctx.lineWidth = tele ? 2 : 2.5;
+      ctx.beginPath(); ctx.arc(0, 0, o.r * (.72 + Math.sin(game.time * 8) * .04), 0, 7); ctx.stroke();
+      if (!tele) {
+        ctx.strokeStyle = hexA(o.color || "#ff8f6b", .5);
+        ctx.lineWidth = 1.5;
+        for (let i = 0; i < 6; i++) {
+          const a2 = i / 6 * Math.PI * 2 + game.time * 1.8;
+          ctx.beginPath();
+          ctx.moveTo(Math.cos(a2) * o.r * .35, Math.sin(a2) * o.r * .35);
+          ctx.lineTo(Math.cos(a2) * o.r * .82, Math.sin(a2) * o.r * .82);
+          ctx.stroke();
+        }
+      }
+      ctx.restore();
+      continue;
+    }
     if (o.kind !== "trap") continue;
     const color = o.color || theme.trap;
     const warning = o.timer < .38 && o.active <= 0;
@@ -4718,6 +4987,29 @@ function drawMerchant(x, y, s = 1) {
   ctx.beginPath(); ctx.arc(24, 4, 4, 0, 7); ctx.fill();
   ctx.fillStyle = "rgba(255,215,107,.35)";
   ctx.beginPath(); ctx.arc(24, 4, 10, 0, 7); ctx.fill();
+  ctx.restore();
+}
+
+function drawBossIntro() {
+  const room = currentRoom();
+  if (!room || room.type !== "boss" || !room.bossPending) return;
+  const t = Math.max(0, room.bossIntro || 0);
+  const pulse = .5 + Math.sin(game.time * 5) * .5;
+  ctx.save();
+  ctx.fillStyle = "rgba(0,0,0," + (.18 + pulse * .08) + ")";
+  ctx.fillRect(R.x, R.y, R.w, R.h);
+  ctx.textAlign = "center"; ctx.textBaseline = "middle";
+  ctx.fillStyle = "#ff6b81";
+  ctx.shadowColor = "rgba(255,80,100,.7)"; ctx.shadowBlur = 24;
+  ctx.font = uiFont(38, true);
+  ctx.fillText("БОСС ПРИБЛИЖАЕТСЯ", W / 2, H / 2 - 28);
+  ctx.shadowBlur = 0;
+  ctx.fillStyle = "#ffe27a";
+  ctx.font = uiFont(22, true);
+  ctx.fillText(Math.ceil(t) + "...", W / 2, H / 2 + 22);
+  ctx.fillStyle = "rgba(233,230,245,.7)";
+  ctx.font = uiFont(13);
+  ctx.fillText("Займи позицию и подготовься", W / 2, H / 2 + 56);
   ctx.restore();
 }
 
@@ -5018,11 +5310,23 @@ function drawPickups() {
 
 function drawBullets() {
   for (const b of game.bullets) {
+    const sp = Math.hypot(b.vx || 0, b.vy || 0);
+    const ang = Math.atan2(b.vy || 0, b.vx || 0);
+    const tail = clamp(sp * .018, 6, 20);
     ctx.save();
     ctx.shadowColor = b.color;
-    ctx.shadowBlur = 10;
+    ctx.shadowBlur = 12;
+    /* Trail gives speed/readability without sprites. */
+    ctx.strokeStyle = hexA(b.color, .35);
+    ctx.lineWidth = Math.max(1.5, b.r * .9);
+    ctx.beginPath();
+    ctx.moveTo(b.x - Math.cos(ang) * tail, b.y - Math.sin(ang) * tail);
+    ctx.lineTo(b.x, b.y);
+    ctx.stroke();
     ctx.fillStyle = b.color;
     ctx.beginPath(); ctx.arc(b.x, b.y, b.r, 0, 7); ctx.fill();
+    ctx.fillStyle = "rgba(255,255,255,.75)";
+    ctx.beginPath(); ctx.arc(b.x - b.r * .2, b.y - b.r * .2, Math.max(1, b.r * .35), 0, 7); ctx.fill();
     ctx.restore();
   }
 }
@@ -5261,6 +5565,13 @@ function drawEnemies() {
         ctx.strokeStyle = "#e0d4ff"; ctx.lineWidth = 2;
         ctx.beginPath(); ctx.arc(0, 0, e.r + 8, 0, 7); ctx.stroke();
       }
+      if (e.type === "wardenite") {
+        ctx.strokeStyle = "rgba(255,143,107,.35)";
+        ctx.lineWidth = 2;
+        ctx.beginPath(); ctx.arc(0, 0, e.r + 7, 0, 7); ctx.stroke();
+        ctx.fillStyle = "#ffd4c2";
+        ctx.beginPath(); ctx.arc(0, -e.r * .2, e.r * .28, 0, 7); ctx.fill();
+      }
     }
 
     ctx.restore();
@@ -5329,9 +5640,15 @@ function drawPlayer() {
 
 function drawParticles() {
   for (const p of game.particles) {
-    ctx.globalAlpha = clamp(p.life / p.maxLife, 0, 1);
+    const a = clamp(p.life / p.maxLife, 0, 1);
+    ctx.globalAlpha = a;
     ctx.fillStyle = p.color;
+    if (p.glow) {
+      ctx.shadowColor = p.color;
+      ctx.shadowBlur = p.size * 2.2;
+    }
     ctx.fillRect(p.x - p.size / 2, p.y - p.size / 2, p.size, p.size);
+    if (p.glow) ctx.shadowBlur = 0;
   }
   ctx.globalAlpha = 1;
 }
@@ -5377,15 +5694,62 @@ function drawEffects() {
 function drawFloaters() {
   ctx.textAlign = "center";
   ctx.textBaseline = "middle";
-  ctx.font = uiFont(15, true);
   for (const f of game.floaters) {
-    ctx.globalAlpha = clamp(f.life, 0, 1);
-    ctx.fillStyle = "rgba(0,0,0,.7)";
-    ctx.fillText(f.text, f.x + 1, f.y + 1);
+    const a = clamp(f.life / (f.maxLife || 1), 0, 1);
+    const big = !!f.big || /[!✦]/.test(f.text) || f.text.length <= 3;
+    const scale = (f.scale || 1);
+    if (f.scale > 1) f.scale = Math.max(1, f.scale - .06);
+    ctx.font = uiFont((big ? 18 : 14) * scale, true);
+    ctx.globalAlpha = a;
+    ctx.fillStyle = "rgba(0,0,0,.72)";
+    ctx.fillText(f.text, f.x + 1.5, f.y + 1.5);
+    if (big) { ctx.shadowColor = f.color; ctx.shadowBlur = 10 * a; }
     ctx.fillStyle = f.color;
     ctx.fillText(f.text, f.x, f.y);
+    ctx.shadowBlur = 0;
   }
   ctx.globalAlpha = 1;
+}
+
+function interactionPrompt() {
+  if (!game || state !== "playing") return null;
+  const room = currentRoom();
+  const p = game.player;
+  const targets = [
+    { kind: "portal", d: 86, text: "E — ПОРТАЛ" },
+    { kind: "stairs", d: 82, text: "E — ЛЕСТНИЦА" },
+    { kind: "cage", d: 86, text: "E — ОСВОБОДИТЬ" },
+    { kind: "chest", d: 70, text: room.type === "ambush" && !room.armed ? "E — ОТКРЫТЬ СУНДУК" : "E — ОТКРЫТЬ СУНДУК" },
+    { kind: "crack", d: 80, text: "E — ВОЙТИ В ТРЕЩИНУ" }
+  ];
+  for (const t of targets) {
+    const o = room.props.find(o => o.kind === t.kind && !o.opened && !o.used);
+    if (o && dist(p.x, p.y, o.x, o.y) < t.d) return { text: t.text, x: o.x, y: o.y - (o.r || 20) - 24 };
+  }
+  if (room.type === "shop") return { text: "E — МАГАЗИН", x: R.x + R.w / 2, y: R.y + 64 };
+  return null;
+}
+
+function drawInteractionPrompt() {
+  const pr = interactionPrompt();
+  if (!pr) return;
+  ctx.save();
+  const pulse = .5 + Math.sin((performance.now() || 0) * .006) * .5;
+  ctx.font = uiFont(12, true);
+  ctx.textAlign = "center"; ctx.textBaseline = "middle";
+  const w = Math.min(280, ctx.measureText(pr.text).width + 30);
+  const x = clamp(pr.x, R.x + w / 2 + 8, R.x + R.w - w / 2 - 8);
+  const y = clamp(pr.y, R.y + 28, R.y + R.h - 28);
+  ctx.shadowColor = "rgba(142,230,255,.45)";
+  ctx.shadowBlur = 8 + pulse * 8;
+  ctx.fillStyle = "rgba(8,8,16,.86)";
+  roundRect(x - w / 2, y - 15, w, 30, 9); ctx.fill();
+  ctx.shadowBlur = 0;
+  ctx.strokeStyle = `rgba(142,230,255,${.45 + pulse * .35})`;
+  ctx.lineWidth = 1.8; ctx.stroke();
+  ctx.fillStyle = "#dff7ff";
+  ctx.fillText(pr.text, x, y + 1);
+  ctx.restore();
 }
 
 function drawHUD() {
@@ -5397,14 +5761,28 @@ function drawHUD() {
     ctx.fillStyle = fpsSmooth >= 50 ? "#7cff9b" : fpsSmooth >= 30 ? "#ffd76b" : "#ff6b81";
     ctx.fillText(Math.round(fpsSmooth) + " FPS", W - 18, 18);
   }
-  ctx.fillStyle = "rgba(8,8,16,.82)";
+  ctx.save();
+  ctx.shadowColor = "rgba(0,0,0,.35)";
+  ctx.shadowBlur = 12;
+  const hudGrad = ctx.createLinearGradient(18, 14, 18, 72);
+  hudGrad.addColorStop(0, "rgba(16,18,32,.92)");
+  hudGrad.addColorStop(1, "rgba(8,8,18,.82)");
+  ctx.fillStyle = hudGrad;
   roundRect(18, 14, 320, 58, 10); ctx.fill();
-  ctx.strokeStyle = "rgba(255,255,255,.08)"; ctx.stroke();
+  ctx.shadowBlur = 0;
+  ctx.strokeStyle = "rgba(142,230,255,.18)"; ctx.lineWidth = 1; ctx.stroke();
+  ctx.restore();
 
   ctx.fillStyle = "rgba(0,0,0,.6)";
   roundRect(32, 25, 190, 14, 7); ctx.fill();
-  ctx.fillStyle = p.hp / p.maxHp > .3 ? "#7cff9b" : "#ff6b81";
-  roundRect(32, 25, 190 * clamp(p.hp / p.maxHp, 0, 1), 14, 7); ctx.fill();
+  const hpPct = clamp((p.dispHp ?? p.hp) / p.maxHp, 0, 1);
+  const hpCol = hpPct > .3 ? "#7cff9b" : "#ff6b81";
+  ctx.fillStyle = hpCol;
+  roundRect(32, 25, 190 * hpPct, 14, 7); ctx.fill();
+  if (hpPct > 0) {
+    ctx.fillStyle = "rgba(255,255,255,.12)";
+    roundRect(32, 25, 190 * hpPct, 6, 7); ctx.fill();
+  }
   ctx.fillStyle = "#e9e6f5";
   ctx.font = uiFont(12, true);
   ctx.textAlign = "left"; ctx.textBaseline = "middle";
@@ -5432,7 +5810,7 @@ function drawHUD() {
     ctx.fillStyle = "rgba(255,226,122,.2)";
     roundRect(32, 41, 190, 4, 2); ctx.fill();
     ctx.fillStyle = p.shieldRegenT > 0 ? "#c99a4a" : "#ffe27a";
-    roundRect(32, 41, 190 * clamp(p.shield / p.shieldMax, 0, 1), 4, 2); ctx.fill();
+    roundRect(32, 41, 190 * clamp((p.dispShield ?? p.shield) / p.shieldMax, 0, 1), 4, 2); ctx.fill();
     if (!compact) {
       ctx.fillStyle = "rgba(255,226,122,.85)";
       ctx.font = uiFont(9);
@@ -5448,7 +5826,7 @@ function drawHUD() {
   ctx.fillStyle = "rgba(142,230,255,.18)";
   roundRect(32, 55, 190, 7, 4); ctx.fill();
   ctx.fillStyle = p.energy < 8 ? "#ff6b81" : "#8ee6ff";
-  roundRect(32, 55, 190 * clamp(p.energy / p.energyMax, 0, 1), 7, 4); ctx.fill();
+  roundRect(32, 55, 190 * clamp((p.dispEnergy ?? p.energy) / p.energyMax, 0, 1), 7, 4); ctx.fill();
   ctx.fillStyle = "rgba(142,230,255,.8)";
   ctx.font = uiFont(9);
   ctx.fillText(compact ? String(Math.ceil(p.energy)) : "ЭНЕРГИЯ " + Math.ceil(p.energy), 230, 62);
@@ -5504,8 +5882,9 @@ function drawHUD() {
   ctx.strokeStyle = "rgba(255,255,255,.08)"; ctx.stroke();
   ctx.fillStyle = "rgba(233,230,245,.55)";
   ctx.font = uiFont(10);
-  fitFont("ГЛАВА " + stageLabel() + " · УР. " + game.level, 158, 10, true);
-  ctx.fillText("ГЛАВА " + stageLabel() + " · УР. " + game.level, W - 176, 28);
+  const modeTag = game.mode === "endless" ? " · ∞" : game.mode === "bossRush" ? " · BOSS" : game.mode === "sprint" ? " · SPRINT" : "";
+  fitFont("ГЛАВА " + stageLabel() + modeTag + " · УР. " + game.level, 158, 10, true);
+  ctx.fillText("ГЛАВА " + stageLabel() + modeTag + " · УР. " + game.level, W - 176, 28);
   drawMinimap(W - 174, 38);
   ctx.fillStyle = game.threat >= 8 ? "#ff6b81" : game.threat >= 4 ? "#ffb36b" : "#8ee6ff";
   ctx.font = uiFont(9, true);
@@ -5839,11 +6218,11 @@ function drawTouchControls() {
       ctx.stroke();
     }
     const labels = {
-      dash: ["РЫВОК", "#9ad8ff"],
-      reload: ["ПЕРЕЗАРЯД", "#ffe27a"],
+      dash: [game.player.dashCd <= 0 ? "РЫВОК" : Math.ceil(game.player.dashCd) + "с", "#9ad8ff"],
+      reload: [game.player.weapons[game.player.wIndex].reloadT > 0 ? "ЗАРЯДКА" : "ПЕРЕЗАРЯД", "#ffe27a"],
       weapon: ["СМЕНА", "#ff9de2"],
       attack: [nearbyInteractable() ? "ВЗАИМОД." : game.player.meleeMode ? "УДАР" : "ОГОНЬ", "#7cff9b"],
-      skill: ["НАВЫК Q", "#ffb36b"],
+      skill: [game.player.skillCd <= 0 ? "НАВЫК Q" : Math.ceil(game.player.skillCd) + "с", "#ffb36b"],
       melee: [game.player.meleeMode ? "КЛИНОК ВКЛ" : "КЛИНОК", "#c08cff"]
     };
     const lab = labels[b.id];
@@ -6324,8 +6703,15 @@ function drawSettings() {
   ctx.textAlign = "center";
 }
 
+function pausePanelMetrics(subtitle) {
+  const lines = Array.isArray(subtitle) ? subtitle.length : 1;
+  const panelH = 180 + Math.max(0, lines - 1) * 22;
+  const panelY = 210;
+  return { panelY, panelH };
+}
 function pauseSettingsButton() {
-  return { x: 390, y: 348, w: 180, h: 38 };
+  const m = pausePanelMetrics(["", "", ""]);
+  return { x: 390, y: m.panelY + m.panelH - 74, w: 180, h: 38 };
 }
 
 function handlePauseClick() {
@@ -6342,17 +6728,20 @@ function handlePauseClick() {
 function drawCenterPanel(title, subtitle, color) {
   ctx.fillStyle = "rgba(5,5,12,.7)";
   ctx.fillRect(0, 0, W, H);
+  const lines = Array.isArray(subtitle) ? subtitle : [subtitle];
+  const m = pausePanelMetrics(lines);
+  const panelY = m.panelY, panelH = m.panelH;
   ctx.fillStyle = "#191827";
-  roundRect(250, 220, 460, 196, 16); ctx.fill();
+  roundRect(250, panelY, 460, panelH, 16); ctx.fill();
   ctx.strokeStyle = color; ctx.lineWidth = 2; ctx.stroke();
   ctx.textAlign = "center"; ctx.textBaseline = "middle";
   ctx.fillStyle = color;
   ctx.font = "bold 34px 'Segoe UI', sans-serif";
-  ctx.fillText(title, W / 2, 270);
+  ctx.fillText(title, W / 2, panelY + 44);
   ctx.fillStyle = "rgba(233,230,245,.75)";
-  ctx.font = uiFont(15);
-  ctx.fillText(subtitle, W / 2, 316);
-  const b = pauseSettingsButton();
+  ctx.font = uiFont(14);
+  for (let i = 0; i < lines.length; i++) ctx.fillText(lines[i], W / 2, panelY + 86 + i * 22);
+  const b = { x: 390, y: panelY + panelH - 74, w: 180, h: 38 };
   ctx.fillStyle = "rgba(142,230,255,.12)";
   roundRect(b.x, b.y, b.w, b.h, 9); ctx.fill();
   ctx.strokeStyle = "#8ee6ff"; ctx.lineWidth = 2; ctx.stroke();
@@ -6360,7 +6749,7 @@ function drawCenterPanel(title, subtitle, color) {
   ctx.font = uiFont(14, true);
   ctx.fillText("НАСТРОЙКИ", W / 2, b.y + b.h / 2);
   if (settings.devMode) {
-    const d = devPauseButton();
+    const d = { x: 390, y: panelY + panelH - 32, w: 180, h: 30 };
     ctx.fillStyle = "rgba(255,179,107,.12)";
     roundRect(d.x, d.y, d.w, d.h, 8); ctx.fill();
     ctx.strokeStyle = "#ffb36b"; ctx.lineWidth = 1.5; ctx.stroke();
@@ -6377,7 +6766,9 @@ function inRect(b) {
 
 function trialsButton() { return { x: 295, y: 126, w: 172, h: 34 }; }
 function modeButtons() {
-  return MODES.map((m, i) => ({ x: 80 + i * 280, y: 138, w: 266, h: 112, m }));
+  const w = 200, gap = 14, total = MODES.length * w + (MODES.length - 1) * gap;
+  const startX = (W - total) / 2;
+  return MODES.map((m, i) => ({ x: startX + i * (w + gap), y: 138, w, h: 112, m }));
 }
 function modButtons() {
   return MODIFIERS.map((m, i) => ({
@@ -6416,8 +6807,9 @@ function drawModeCards() {
     ctx.font = uiFont(15, true);
     ctx.fillText(b.m.name, b.x + b.w / 2, b.y + 26);
     ctx.fillStyle = "rgba(233,230,245,.55)";
-    ctx.font = uiFont(11);
-    ctx.fillText(b.m.desc, b.x + b.w / 2, b.y + 50);
+    ctx.font = uiFont(10);
+    const desc = b.m.desc.length > 28 ? b.m.desc.slice(0, 27) + "…" : b.m.desc;
+    ctx.fillText(desc, b.x + b.w / 2, b.y + 50);
     ctx.fillStyle = "#ff9de2";
     ctx.font = uiFont(12, true);
     ctx.fillText("НАГРАДА ✦ ×" + b.m.gemMul, b.x + b.w / 2, b.y + 72);
@@ -6427,6 +6819,7 @@ function drawModeCards() {
             String(saveData.records.sprintBest % 60).padStart(2, "0");
     }
     if (b.m.id === "bossRush" && saveData.records.rushBest) rec = "Лучшее время " + saveData.records.rushBest + " с";
+    if (b.m.id === "endless" && saveData.records.endlessBest) rec = "Лучшая глава " + saveData.records.endlessBest;
     if (rec) {
       ctx.fillStyle = "rgba(142,230,255,.55)";
       ctx.font = uiFont(10);
@@ -6600,7 +6993,8 @@ function devMenuButton() {
   return { x: 70, y: 542, w: 180, h: 26 };
 }
 function devPauseButton() {
-  return { x: 390, y: 384, w: 180, h: 30 };
+  const m = pausePanelMetrics(["", "", ""]);
+  return { x: 390, y: m.panelY + m.panelH - 32, w: 180, h: 30 };
 }
 
 function openDevRun() {
@@ -7087,17 +7481,34 @@ function drawMenu() {
   ctx.save();
   ctx.textAlign = "center";
   ctx.textBaseline = "middle";
+  const t = (performance.now() || 0) * .001;
 
-  ctx.fillStyle = "rgba(124,255,155,.07)";
-  ctx.beginPath(); ctx.arc(W / 2, 260, 142 + Math.sin(performance.now() / 700) * 8, 0, 7); ctx.fill();
+  /* Hero glow + subtle orbit rings for a stronger title screen. */
+  const cx = W / 2, cy = 258;
+  const glow = ctx.createRadialGradient(cx, cy, 20, cx, cy, 180);
+  glow.addColorStop(0, "rgba(142,230,255,.12)");
+  glow.addColorStop(.45, "rgba(124,255,155,.08)");
+  glow.addColorStop(1, "rgba(0,0,0,0)");
+  ctx.fillStyle = glow;
+  ctx.beginPath(); ctx.arc(cx, cy, 180, 0, 7); ctx.fill();
+  ctx.strokeStyle = "rgba(142,230,255,.10)";
+  ctx.lineWidth = 2;
+  for (let i = 0; i < 3; i++) {
+    ctx.beginPath();
+    ctx.arc(cx, cy, 92 + i * 34 + Math.sin(t * 1.2 + i) * 3, 0, 7);
+    ctx.stroke();
+  }
 
-  ctx.fillStyle = "#e9e6f5";
-  fitFont("ПОДЗЕМНЫЙ РЫЦАРЬ", W - 40, 46, true);
+  ctx.fillStyle = "#f1efff";
+  ctx.shadowColor = "rgba(142,230,255,.35)";
+  ctx.shadowBlur = 18;
+  fitFont("ПОДЗЕМНЫЙ РЫЦАРЬ", W - 40, 48, true);
   ctx.fillText("ПОДЗЕМНЫЙ РЫЦАРЬ", W / 2, 70);
+  ctx.shadowBlur = 0;
 
   ctx.fillStyle = "#8ee6ff";
-  fitFont("5 этажей · 5 боссов · 6 героев · 15 оружий · испытания", W - 40, 14);
-  ctx.fillText("5 этажей · 5 боссов · 6 героев · 15 оружий · испытания", W / 2, 106);
+  fitFont("5 глав · 50 ступеней · 6 героев · 31 оружие · испытания", W - 40, 14);
+  ctx.fillText("5 глав · 50 ступеней · 6 героев · 31 оружие · испытания", W / 2, 106);
 
   const installed = isInstalled();
   const installLabel = installed ? "УСТАНОВЛЕНО" : deferredInstallPrompt ? "УСТАНОВИТЬ" : "УСТАНОВИТЬ ИГРУ";
@@ -7484,13 +7895,17 @@ function drawEnd(win) {
   ctx.fillText(win ? "ПОБЕДА!" : "ТЫ ПОГИБ", W / 2, 210);
   ctx.fillStyle = "rgba(233,230,245,.8)";
   ctx.font = uiFont(15);
-  ctx.fillText(win ? "Все пять этажей пройдены. Подземелье свободно." : "Подземелье ждёт новой попытки.", W / 2, 256);
+  const subtitle = win
+    ? "Все пять глав пройдены. Подземелье свободно."
+    : (game.mode === "endless" ? "Бесконечный забег окончен. Глубина: глава " + game.floor + "." : "Подземелье ждёт новой попытки.");
+  ctx.fillText(subtitle, W / 2, 256);
   ctx.font = uiFont(14);
   ctx.fillStyle = "rgba(233,230,245,.6)";
   ctx.fillText("Этаж: " + game.floor + "     Комнат: " + game.roomCount + "     Убийств: " + game.killCount, W / 2, 310);
   ctx.fillText("Монет: " + game.coins + "     Реликвий: " + game.relics.length +
                "     Баффов: " + (game.buffs ? game.buffs.length : 0), W / 2, 334);
-  ctx.fillText("Оружий: " + game.player.weapons.length + "     Времени: " + Math.floor(game.time) + " с     Сид: " + game.seed, W / 2, 360);
+  const rec = (game.mode === "endless" && saveData.records.endlessBest) ? "     Рекорд: " + saveData.records.endlessBest : "";
+  ctx.fillText("Оружий: " + game.player.weapons.length + "     Времени: " + Math.floor(game.time) + " с     Сид: " + game.seed + rec, W / 2, 360);
   const pulse = .55 + Math.sin(performance.now() / 350) * .25;
   ctx.fillStyle = `rgba(255,215,107,${pulse})`;
   ctx.font = uiFont(13, true);
